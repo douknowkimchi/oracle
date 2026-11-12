@@ -51,6 +51,7 @@ vi.mock("../../src/sessionStore.ts", () => ({
 }));
 
 import type { SessionMetadata, SessionModelRun } from "../../src/sessionManager.ts";
+import { createPreSubmitGate } from "../../src/browser/actions/preSubmitVerification.ts";
 import type { ModelName } from "../../src/oracle.ts";
 import { performSessionRun } from "../../src/cli/sessionRunner.ts";
 import {
@@ -1110,6 +1111,55 @@ describe("performSessionRun", () => {
       browser: expect.objectContaining({ preSubmitVerification }),
     });
   });
+
+  test.each(["model-selection", "thinking-time", "deep-research-activation"] as const)(
+    "records verified=false evidence when %s fails before send",
+    async (stage) => {
+      const gate = createPreSubmitGate(
+        { evaluate: vi.fn() } as never,
+        {
+          requestedModel: "gpt-6",
+          modelLabel: "GPT-6",
+          requestedEffort: "pro",
+          deepResearch: true,
+          stopBeforeSubmit: false,
+        },
+        Object.assign(vi.fn(), { verbose: false }) as never,
+      );
+      const selectionError = await gate
+        .guardSelection(stage, 0, async () => {
+          throw new Error(`${stage} owner failed`);
+        })
+        .catch((caught: unknown) => caught);
+      vi.mocked(runBrowserSessionExecution).mockRejectedValue(selectionError);
+
+      await expect(
+        performSessionRun({
+          sessionMeta: baseSessionMeta,
+          runOptions: baseRunOptions,
+          mode: "browser",
+          browserConfig: { chromePath: null },
+          cwd: "/tmp",
+          log,
+          write,
+          version: cliVersion,
+        }),
+      ).rejects.toThrow(`${stage} owner failed`);
+
+      const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+      expect(finalUpdate).toMatchObject({
+        status: "error",
+        browser: expect.objectContaining({
+          preSubmitVerification: expect.objectContaining({
+            verified: false,
+            modelChecked: false,
+            mismatches: [expect.stringMatching(new RegExp(`^${stage}: failed: `))],
+          }),
+        }),
+      });
+      expect(finalUpdate?.browser?.runtime?.promptSubmitted).not.toBe(true);
+    },
+  );
 
   test("invokes browser runner when mode is browser", async () => {
     vi.mocked(runBrowserSessionExecution).mockResolvedValue({

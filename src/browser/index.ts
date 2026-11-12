@@ -50,6 +50,7 @@ import { ensureThinkingTime } from "./actions/thinkingTime.js";
 import {
   clearComposerAfterStop,
   createPreSubmitGate,
+  guardPreSendSelection,
   resolvePreSubmitPlan,
 } from "./actions/preSubmitVerification.js";
 import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
@@ -1513,30 +1514,46 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const updateConversationHint = conversationUrlMonitor.update;
     await captureRuntimeSnapshot();
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
+    const preSubmitPlan = resolvePreSubmitPlan(config, {
+      requestedModel: options.requestedModel,
+      resumingConversation: isResumingConversation,
+    });
+    const preSubmitGate = preSubmitPlan
+      ? createPreSubmitGate(Runtime, preSubmitPlan, logger, {
+          isTransportFailure: isBrowserTransportFailure,
+        })
+      : null;
     if (config.desiredModel && modelStrategy !== "ignore" && !isResumingConversation) {
-      modelSelectionEvidence = await raceWithDisconnect(
-        withRetries(
-          () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
-          {
-            retries: 2,
-            delayMs: 300,
-            onRetry: (attempt, error) => {
-              if (options.verbose) {
-                logger(
-                  `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-                );
-              }
-            },
-          },
-        ),
-      ).catch((error) => {
-        const base = error instanceof Error ? error.message : String(error);
-        const hint =
-          appliedCookies === 0
-            ? " No cookies were applied; log in to ChatGPT in Chrome or provide inline cookies (--browser-inline-cookies[(-file)] or ORACLE_BROWSER_COOKIES_JSON)."
-            : "";
-        throw new Error(`${base}${hint}`);
-      });
+      modelSelectionEvidence = await guardPreSendSelection(
+        preSubmitGate,
+        "model-selection",
+        0,
+        () =>
+          raceWithDisconnect(
+            withRetries(
+              () =>
+                ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
+              {
+                retries: 2,
+                delayMs: 300,
+                onRetry: (attempt, error) => {
+                  if (options.verbose) {
+                    logger(
+                      `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                    );
+                  }
+                },
+              },
+            ),
+          ).catch((error) => {
+            const base = error instanceof Error ? error.message : String(error);
+            const hint =
+              appliedCookies === 0
+                ? " No cookies were applied; log in to ChatGPT in Chrome or provide inline cookies (--browser-inline-cookies[(-file)] or ORACLE_BROWSER_COOKIES_JSON)."
+                : "";
+            throw new Error(`${base}${hint}`);
+          }),
+      );
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       logger(
         `Prompt textarea ready (after model switch, ${promptText.length.toLocaleString()} chars queued)`,
@@ -1554,27 +1571,22 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
     const deepResearch = config.researchMode === "deep";
     if (shouldApplyThinkingTimeSelection(config)) {
-      await raceWithDisconnect(
-        withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
-          retries: 2,
-          delayMs: 300,
-          onRetry: (attempt, error) => {
-            if (options.verbose) {
-              logger(
-                `[retry] Thinking time (${config.thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-              );
-            }
-          },
-        }),
+      await guardPreSendSelection(preSubmitGate, "thinking-time", 0, () =>
+        raceWithDisconnect(
+          withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
+            retries: 2,
+            delayMs: 300,
+            onRetry: (attempt, error) => {
+              if (options.verbose) {
+                logger(
+                  `[retry] Thinking time (${config.thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                );
+              }
+            },
+          }),
+        ),
       );
     }
-    const preSubmitPlan = resolvePreSubmitPlan(config, {
-      requestedModel: options.requestedModel,
-      resumingConversation: isResumingConversation,
-    });
-    const preSubmitGate = preSubmitPlan
-      ? createPreSubmitGate(Runtime, preSubmitPlan, logger)
-      : null;
     const profileLockTimeoutMs = manualLogin ? (config.profileLockTimeoutMs ?? 0) : 0;
     let profileLock: ProfileRunLock | null = null;
     const acquireProfileLockIfNeeded = async () => {
@@ -1635,18 +1647,24 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         logger("All attachments uploaded");
       }
       if (deepResearch) {
-        await raceWithDisconnect(
-          withRetries(() => activateDeepResearch(Runtime, Input, logger), {
-            retries: 2,
-            delayMs: 500,
-            onRetry: (attempt, error) => {
-              if (options.verbose) {
-                logger(
-                  `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-                );
-              }
-            },
-          }),
+        await guardPreSendSelection(
+          preSubmitGate,
+          "deep-research-activation",
+          submissionAttachments.length,
+          () =>
+            raceWithDisconnect(
+              withRetries(() => activateDeepResearch(Runtime, Input, logger), {
+                retries: 2,
+                delayMs: 500,
+                onRetry: (attempt, error) => {
+                  if (options.verbose) {
+                    logger(
+                      `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                    );
+                  }
+                },
+              }),
+            ),
         );
         await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
         logger(
@@ -3161,20 +3179,36 @@ async function runRemoteBrowserMode(
     }
 
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
+    const preSubmitPlan = resolvePreSubmitPlan(config, {
+      requestedModel: options.requestedModel,
+      resumingConversation: Boolean(config.resumeConversationUrl),
+    });
+    const preSubmitGate = preSubmitPlan
+      ? createPreSubmitGate(Runtime, preSubmitPlan, logger, {
+          isTransportFailure: isBrowserTransportFailure,
+        })
+      : null;
     if (config.desiredModel && modelStrategy !== "ignore" && !config.resumeConversationUrl) {
-      modelSelectionEvidence = await withRetries(
-        () => ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
-        {
-          retries: 2,
-          delayMs: 300,
-          onRetry: (attempt, error) => {
-            if (options.verbose) {
-              logger(
-                `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-              );
-            }
-          },
-        },
+      modelSelectionEvidence = await guardPreSendSelection(
+        preSubmitGate,
+        "model-selection",
+        0,
+        () =>
+          withRetries(
+            () =>
+              ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
+            {
+              retries: 2,
+              delayMs: 300,
+              onRetry: (attempt, error) => {
+                if (options.verbose) {
+                  logger(
+                    `[retry] Model picker attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                  );
+                }
+              },
+            },
+          ),
       );
       await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
       logger(
@@ -3193,25 +3227,20 @@ async function runRemoteBrowserMode(
     }
     const deepResearch = config.researchMode === "deep";
     if (shouldApplyThinkingTimeSelection(config)) {
-      await withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
-        retries: 2,
-        delayMs: 300,
-        onRetry: (attempt, error) => {
-          if (options.verbose) {
-            logger(
-              `[retry] Thinking time (${config.thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-            );
-          }
-        },
-      });
+      await guardPreSendSelection(preSubmitGate, "thinking-time", 0, () =>
+        withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
+          retries: 2,
+          delayMs: 300,
+          onRetry: (attempt, error) => {
+            if (options.verbose) {
+              logger(
+                `[retry] Thinking time (${config.thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+              );
+            }
+          },
+        }),
+      );
     }
-    const preSubmitPlan = resolvePreSubmitPlan(config, {
-      requestedModel: options.requestedModel,
-      resumingConversation: Boolean(config.resumeConversationUrl),
-    });
-    const preSubmitGate = preSubmitPlan
-      ? createPreSubmitGate(Runtime, preSubmitPlan, logger)
-      : null;
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
@@ -3244,17 +3273,23 @@ async function runRemoteBrowserMode(
         logger("All attachments uploaded");
       }
       if (deepResearch) {
-        await withRetries(() => activateDeepResearch(Runtime, Input, logger), {
-          retries: 2,
-          delayMs: 500,
-          onRetry: (attempt, error) => {
-            if (options.verbose) {
-              logger(
-                `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-              );
-            }
-          },
-        });
+        await guardPreSendSelection(
+          preSubmitGate,
+          "deep-research-activation",
+          submissionAttachments.length,
+          () =>
+            withRetries(() => activateDeepResearch(Runtime, Input, logger), {
+              retries: 2,
+              delayMs: 500,
+              onRetry: (attempt, error) => {
+                if (options.verbose) {
+                  logger(
+                    `[retry] Deep Research activation attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                  );
+                }
+              },
+            }),
+        );
         await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
         logger(
           `Prompt textarea ready (after Deep Research activation, ${prompt.length.toLocaleString()} chars queued)`,
@@ -4003,6 +4038,7 @@ export const __test__ = {
   isImageOnlyUiChromeText,
   listIgnoredRemoteChromeFlags,
   resolveManualLoginWaitMs,
+  isBrowserTransportFailure,
   shouldApplyThinkingTimeSelection,
   shouldCleanupBlankTabsAfterLastLease,
   shouldCloseOwnedRunTargetAfterRun,
@@ -4040,6 +4076,16 @@ export async function acquireManualLoginChromeForRunForTest(
   },
 ): Promise<{ chrome: BrowserChrome; reusedChrome: LaunchedChrome | null }> {
   return acquireManualLoginChromeForRun(userDataDir, config, logger, sessionId, deps);
+}
+
+/** CDP transport loss (socket closed or Chrome disconnect), as opposed to a page-level failure. */
+function isBrowserTransportFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (isWebSocketClosureError(error)) return true;
+  return (
+    error instanceof BrowserAutomationError &&
+    (error.details as { stage?: string } | undefined)?.stage === "connection-lost"
+  );
 }
 
 export function isWebSocketClosureError(error: Error): boolean {

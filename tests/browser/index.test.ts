@@ -248,6 +248,23 @@ describe("manual-login profile setup gate", () => {
   });
 });
 
+describe("browser transport failure classification", () => {
+  test("treats socket closure and Chrome disconnects as transport failures only", () => {
+    expect(__test__.isBrowserTransportFailure(new Error("WebSocket is closed"))).toBe(true);
+    expect(
+      __test__.isBrowserTransportFailure(
+        new BrowserAutomationError("Chrome disconnected", { stage: "connection-lost" }),
+      ),
+    ).toBe(true);
+    expect(
+      __test__.isBrowserTransportFailure(
+        new BrowserAutomationError("slider range 0..3", { stage: "thinking-time" }),
+      ),
+    ).toBe(false);
+    expect(__test__.isBrowserTransportFailure("WebSocket is closed")).toBe(false);
+  });
+});
+
 describe("thinking time selection policy", () => {
   test("keeps explicit effort selection enabled for Deep Research", () => {
     const config = resolveBrowserConfig({

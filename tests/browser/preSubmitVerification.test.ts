@@ -2,11 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import {
   clearComposerAfterStop,
   createPreSubmitGate,
+  guardPreSendSelection,
   resolvePreSubmitPlan,
   verifyComposerBeforeSubmit,
   type PreSubmitPlan,
 } from "../../src/browser/actions/preSubmitVerification.js";
 import { submitPrompt } from "../../src/browser/actions/promptComposer.js";
+import { ensureThinkingTime } from "../../src/browser/actions/thinkingTime.js";
+import { activateDeepResearch } from "../../src/browser/actions/deepResearch.js";
+import { withRetries } from "../../src/browser/utils.js";
 import type { BrowserLogger } from "../../src/browser/types.js";
 import type { BrowserPreSubmitVerification } from "../../src/sessionStore.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
@@ -346,5 +350,187 @@ describe("clearComposerAfterStop", () => {
       "stop-cleanup-prompt",
       "stop-cleanup-deep-research",
     ]);
+  });
+});
+
+describe("selection failures before send", () => {
+  const prompt = "Research the market.";
+
+  /** Selection errors keep the owner's stage; the evidence rides along in the details. */
+  function selectionEvidence(error: unknown): BrowserPreSubmitVerification {
+    expect(error).toBeInstanceOf(BrowserAutomationError);
+    const evidence = (
+      (error as BrowserAutomationError).details as {
+        preSubmitVerification?: BrowserPreSubmitVerification;
+      }
+    ).preSubmitVerification;
+    expect(evidence?.verified).toBe(false);
+    return evidence as BrowserPreSubmitVerification;
+  }
+
+  /** Mirrors the browser run order: selection owners, then submitPrompt with the gate hook. */
+  async function runSelectionThenSubmit(
+    gate: ReturnType<typeof createPreSubmitGate>,
+    stage: "model-selection" | "thinking-time" | "deep-research-activation",
+    attachmentCount: number,
+    owner: () => Promise<unknown>,
+  ) {
+    const input = {
+      insertText: vi.fn(async () => undefined),
+      dispatchKeyEvent: vi.fn(async () => undefined),
+    };
+    const submitRuntime = { evaluate: vi.fn() };
+    const error = await gate
+      .guardSelection(stage, attachmentCount, owner)
+      .then(() =>
+        submitPrompt(
+          {
+            runtime: submitRuntime as never,
+            input: input as never,
+            beforeSend: gate.beforeSend({ attachmentCount, prompt }),
+          },
+          prompt,
+          (() => undefined) as unknown as BrowserLogger,
+        ),
+      )
+      .then(
+        () => {
+          throw new Error("expected the selection owner to fail");
+        },
+        (caught: unknown) => caught,
+      );
+    return { error, input, submitRuntime };
+  }
+
+  it("records a model selection failure after retries without reaching send", async () => {
+    const { Runtime, logger, logs } = setup();
+    const gate = createPreSubmitGate(Runtime, { ...PLAN, stopBeforeSubmit: true }, logger);
+    let attempts = 0;
+
+    const { error, input, submitRuntime } = await runSelectionThenSubmit(
+      gate,
+      "model-selection",
+      0,
+      () =>
+        withRetries(
+          async () => {
+            attempts += 1;
+            throw new Error('Model picker: option not found for exact model label "GPT-6"');
+          },
+          { retries: 2, delayMs: 0 },
+        ),
+    );
+
+    expect(attempts).toBe(3);
+    const evidence = selectionEvidence(error);
+    expect(evidence).toMatchObject({
+      requestedModel: "gpt-6",
+      resolvedModelLabel: null,
+      modelChecked: false,
+      observedEffortIndex: null,
+      deepResearchTokenPresent: false,
+      attachmentCount: 0,
+      stoppedBeforeSubmit: true,
+    });
+    expect(evidence.mismatches[0]).toMatch(
+      /^model-selection: failed: Model picker: option not found/,
+    );
+    expect((error as BrowserAutomationError).details).toMatchObject({
+      stage: "model-selection",
+      selectionStage: "model-selection",
+    });
+    expect(logs.filter((line) => line.includes("Pre-submit verification failed"))).toHaveLength(1);
+    expect(input.insertText).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+    expect(submitRuntime.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("records the slider an effort selection failure actually read", async () => {
+    const dom = new FakePickerDom({ effort: { min: "0", max: "3", value: "3" } });
+    const { Runtime, Input } = dom.cdp();
+    const { logger } = setup();
+    const gate = createPreSubmitGate(Runtime as never, PLAN, logger);
+
+    const { error, input } = await runSelectionThenSubmit(gate, "thinking-time", 0, () =>
+      ensureThinkingTime(Runtime as never, Input as never, "pro", logger),
+    );
+
+    const evidence = selectionEvidence(error);
+    expect(evidence).toMatchObject({
+      requestedEffort: "pro",
+      observedEffortIndex: 3,
+      observedEffortLabel: "Extra High",
+      effortRangeMin: 0,
+      effortRangeMax: 3,
+      stoppedBeforeSubmit: false,
+    });
+    expect(evidence.mismatches[0]).toMatch(/^thinking-time: effort-range-invalid: /);
+    expect((error as BrowserAutomationError).details).toMatchObject({ stage: "thinking-time" });
+    expect(dom.sentKeys).toEqual([]);
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
+  it("records a Deep Research activation failure with the uploaded attachment count", async () => {
+    const { logger } = setup();
+    const gate = createPreSubmitGate(setup().Runtime, PLAN, logger);
+    const drRuntime = {
+      evaluate: vi.fn(async () => ({ result: { value: { status: "plus-button-missing" } } })),
+    };
+
+    const { error, input } = await runSelectionThenSubmit(gate, "deep-research-activation", 2, () =>
+      activateDeepResearch(drRuntime as never, {} as never, logger),
+    );
+
+    const evidence = selectionEvidence(error);
+    expect(evidence).toMatchObject({ deepResearchRequested: true, attachmentCount: 2 });
+    expect(evidence.mismatches[0]).toMatch(/^deep-research-activation: plus-button-missing: /);
+    expect((error as BrowserAutomationError).details).toMatchObject({
+      stage: "deep-research-activate",
+      code: "plus-button-missing",
+    });
+    expect(input.insertText).not.toHaveBeenCalled();
+  });
+
+  it("adds no evidence once the gate has decided to send", async () => {
+    const { Runtime, logger } = setup();
+    const gate = createPreSubmitGate(Runtime, PLAN, logger);
+    await expect(gate.beforeSend({ attachmentCount: 0, prompt })()).resolves.toBe("send");
+    const original = new BrowserAutomationError("Deep Research pill did not appear", {
+      stage: "deep-research-activate",
+    });
+
+    const error = await gate
+      .guardSelection("deep-research-activation", 0, async () => {
+        throw original;
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBe(original);
+    expect(original.details).not.toHaveProperty("preSubmitVerification");
+  });
+
+  it("passes transport failures through unchanged", async () => {
+    const { Runtime, logger } = setup();
+    const gate = createPreSubmitGate(Runtime, PLAN, logger, {
+      isTransportFailure: (error) =>
+        error instanceof Error && error.message === "WebSocket is closed",
+    });
+    const original = new Error("WebSocket is closed");
+
+    await expect(
+      gate.guardSelection("thinking-time", 0, async () => {
+        throw original;
+      }),
+    ).rejects.toBe(original);
+  });
+
+  it("runs owners directly when the run has no pre-submit plan", async () => {
+    const original = new Error("legacy picker failed");
+
+    await expect(
+      guardPreSendSelection(null, "model-selection", 0, async () => {
+        throw original;
+      }),
+    ).rejects.toBe(original);
   });
 });
