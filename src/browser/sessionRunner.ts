@@ -51,6 +51,7 @@ export interface BrowserSessionRunnerDeps {
   persistRuntimeHint?: (
     runtime: BrowserRuntimeMetadata,
     modelSelection?: BrowserModelSelectionEvidence,
+    preSubmitVerification?: BrowserPreSubmitVerification,
   ) => Promise<void> | void;
 }
 
@@ -221,12 +222,14 @@ export async function runBrowserSessionExecution(
       outputPath: runOptions.outputPath,
       followUpPrompts: runOptions.browserFollowUps,
       requestedModel: runOptions.model,
-      runtimeHintCb: async (runtime, modelSelection) => {
+      runtimeHintCb: async (runtime, modelSelection, preSubmitVerification) => {
         const runtimeWithController = {
           ...runtime,
           controllerPid: runtime.controllerPid ?? process.pid,
         };
-        if (modelSelection) {
+        if (preSubmitVerification) {
+          await persistRuntimeHint(runtimeWithController, modelSelection, preSubmitVerification);
+        } else if (modelSelection) {
           await persistRuntimeHint(runtimeWithController, modelSelection);
         } else {
           await persistRuntimeHint(runtimeWithController);

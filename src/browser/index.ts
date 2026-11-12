@@ -1003,6 +1003,8 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
   let lastUrl: string | undefined;
   let promptSubmitted = false;
   let modelSelectionEvidence: BrowserModelSelectionEvidence | undefined;
+  // Set by the pre-submit gate before send, so every later runtime hint carries it.
+  let preSubmitEvidence: BrowserPreSubmitVerification | undefined;
   let tabLease: BrowserTabLease | null = null;
   let conversationUrlMonitor: ConversationUrlMonitor | null = null;
   const emitRuntimeHint = async (): Promise<void> => {
@@ -1022,7 +1024,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       controllerPid: process.pid,
     };
     try {
-      await runtimeHintCb?.(hint, modelSelectionEvidence);
+      await runtimeHintCb?.(hint, modelSelectionEvidence, preSubmitEvidence);
       await tabLease?.update({
         chromeHost,
         chromePort: chrome.port,
@@ -1521,6 +1523,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const preSubmitGate = preSubmitPlan
       ? createPreSubmitGate(Runtime, preSubmitPlan, logger, {
           isTransportFailure: isBrowserTransportFailure,
+          onVerified: (evidence) => {
+            preSubmitEvidence = evidence;
+          },
         })
       : null;
     if (config.desiredModel && modelStrategy !== "ignore" && !isResumingConversation) {
@@ -2992,6 +2997,8 @@ async function runRemoteBrowserMode(
   let lastUrl: string | undefined;
   let promptSubmitted = false;
   let modelSelectionEvidence: BrowserModelSelectionEvidence | undefined;
+  // Set by the pre-submit gate before send, so every later runtime hint carries it.
+  let preSubmitEvidence: BrowserPreSubmitVerification | undefined;
   let attachedExistingTab = false;
   let ownsTarget = true;
   let conversationUrlMonitor: ConversationUrlMonitor | null = null;
@@ -3012,6 +3019,7 @@ async function runRemoteBrowserMode(
           controllerPid: process.pid,
         },
         modelSelectionEvidence,
+        preSubmitEvidence,
       );
       await tabLease?.update({
         chromeHost: host,
@@ -3186,6 +3194,9 @@ async function runRemoteBrowserMode(
     const preSubmitGate = preSubmitPlan
       ? createPreSubmitGate(Runtime, preSubmitPlan, logger, {
           isTransportFailure: isBrowserTransportFailure,
+          onVerified: (evidence) => {
+            preSubmitEvidence = evidence;
+          },
         })
       : null;
     if (config.desiredModel && modelStrategy !== "ignore" && !config.resumeConversationUrl) {

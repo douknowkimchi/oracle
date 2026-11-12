@@ -310,6 +310,29 @@ describe("submitPrompt with the pre-submit gate", () => {
     expect(afterHook).toEqual([]);
   });
 
+  it("hands passing evidence to onVerified before the send decision is returned", async () => {
+    const { dom, logger } = setup();
+    const order: string[] = [];
+    const gate = createPreSubmitGate(dom.cdp().Runtime as never, PLAN, logger, {
+      onVerified: (evidence) => order.push(`verified:${evidence.verified}`),
+    });
+
+    const decision = await gate.beforeSend({ attachmentCount: 0, prompt })();
+    order.push(`decision:${decision}`);
+
+    expect(order).toEqual(["verified:true", "decision:send"]);
+  });
+
+  it("does not report evidence through onVerified when the final check fails", async () => {
+    const { dom, logger } = setup({ checkedModel: "GPT-5.6 Sol" });
+    const onVerified = vi.fn();
+    const gate = createPreSubmitGate(dom.cdp().Runtime as never, PLAN, logger, { onVerified });
+
+    await verificationFailure(gate.beforeSend({ attachmentCount: 0, prompt })());
+
+    expect(onVerified).not.toHaveBeenCalled();
+  });
+
   it("lets a verified normal run continue to the send step", async () => {
     const { dom, logger } = setup();
     const gate = createPreSubmitGate(dom.cdp().Runtime as never, PLAN, logger);

@@ -117,11 +117,16 @@ export async function performSessionRun({
         persistRuntimeHint: async (
           runtime: BrowserRuntimeMetadata,
           modelSelection?: BrowserModelSelectionEvidence,
+          preSubmitVerification?: BrowserPreSubmitVerification,
         ) => {
+          // Pre-submit evidence arrives with (or before) the promptSubmitted hint; later
+          // hints must never drop it once it is in meta.
+          const evidence = preSubmitVerification ?? currentBrowser?.preSubmitVerification;
           const browser = {
             config: browserConfig,
             runtime,
             ...(modelSelection ? { modelSelection } : {}),
+            ...(evidence ? { preSubmitVerification: evidence } : {}),
           };
           await sessionStore.updateSession(sessionMeta.id, {
             status: "running",
@@ -176,7 +181,8 @@ export async function performSessionRun({
           runtime: result.runtime,
           archive: result.archive,
           modelSelection: result.modelSelection,
-          preSubmitVerification: result.preSubmitVerification,
+          preSubmitVerification:
+            result.preSubmitVerification ?? currentBrowser?.preSubmitVerification,
           warnings: result.warnings,
         },
         artifacts: mergeArtifacts(sessionMeta.artifacts, result.artifacts),

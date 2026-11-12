@@ -151,10 +151,14 @@ export interface BrowserRunOptions {
    * and attached-existing tabs are still preserved for recovery/user ownership.
    */
   closeOwnedTabOnComplete?: boolean;
-  /** Optional hook to persist runtime info and current model evidence as soon as Chrome is ready. */
+  /**
+   * Optional hook to persist runtime info and current selection evidence as soon as Chrome is
+   * ready. Passing pre-submit evidence is set before send, so it travels with promptSubmitted.
+   */
   runtimeHintCb?: (
     hint: BrowserRuntimeMetadata,
     modelSelection?: BrowserModelSelectionEvidence,
+    preSubmitVerification?: BrowserPreSubmitVerification,
   ) => void | Promise<void>;
 }
 

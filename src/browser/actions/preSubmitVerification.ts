@@ -199,7 +199,14 @@ export function createPreSubmitGate(
   Runtime: ChromeClient["Runtime"],
   plan: PreSubmitPlan,
   logger: BrowserLogger,
-  options: { isTransportFailure?: (error: unknown) => boolean } = {},
+  options: {
+    isTransportFailure?: (error: unknown) => boolean;
+    /**
+     * Receives passing evidence before beforeSend returns, so a caller can persist it no later
+     * than the promptSubmitted hint that follows the send.
+     */
+    onVerified?: (evidence: BrowserPreSubmitVerification) => void;
+  } = {},
 ): PreSubmitGate {
   let evidence: BrowserPreSubmitVerification | undefined;
   let stopped = false;
@@ -207,6 +214,7 @@ export function createPreSubmitGate(
   return {
     beforeSend: (submission) => async () => {
       evidence = await verifyComposerBeforeSubmit(Runtime, plan, submission, logger);
+      options.onVerified?.(evidence);
       if (plan.stopBeforeSubmit) {
         stopped = true;
         return "stop";

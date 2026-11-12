@@ -1161,6 +1161,100 @@ describe("performSessionRun", () => {
     },
   );
 
+  test("persists pre-submit evidence with promptSubmitted and keeps it through later updates", async () => {
+    const evidence = {
+      requestedModel: "gpt-6",
+      resolvedModelLabel: "GPT-6",
+      modelChecked: true,
+      requestedEffort: "pro" as const,
+      observedEffortIndex: 4,
+      observedEffortLabel: "Pro",
+      effortRangeMin: 0,
+      effortRangeMax: 4,
+      deepResearchRequested: true,
+      deepResearchTokenPresent: true,
+      attachmentCount: 0,
+      verified: true,
+      stoppedBeforeSubmit: false,
+      mismatches: [],
+      capturedAt: "2026-11-13T00:00:00.000Z",
+    };
+    sessionStoreMock.updateSession.mockClear();
+    vi.mocked(runBrowserSessionExecution).mockImplementationOnce(async (_args, deps) => {
+      const persist = deps?.persistRuntimeHint;
+      await persist?.({ chromePort: 9222, promptSubmitted: false });
+      await persist?.({ chromePort: 9222, promptSubmitted: true }, undefined, evidence);
+      // Later hint (conversation URL update) without evidence must not erase it.
+      await persist?.({
+        chromePort: 9222,
+        promptSubmitted: true,
+        tabUrl: "https://chatgpt.com/c/demo",
+      });
+      return {
+        usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 },
+        elapsedMs: 10,
+        runtime: { chromePort: 9222, promptSubmitted: true, tabUrl: "https://chatgpt.com/c/demo" },
+        answerText: "Answer",
+      };
+    });
+
+    await performSessionRun({
+      sessionMeta: baseSessionMeta,
+      runOptions: baseRunOptions,
+      mode: "browser",
+      browserConfig: { chromePath: null },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+
+    const browserUpdates = sessionStoreMock.updateSession.mock.calls
+      .map((call) => call[1]?.browser)
+      .filter((browser) => browser?.runtime);
+    expect(browserUpdates.map((browser) => browser.runtime.promptSubmitted)).toEqual([
+      false,
+      true,
+      true,
+      true,
+    ]);
+    expect(browserUpdates[0]).not.toHaveProperty("preSubmitVerification");
+    for (const browser of browserUpdates.filter((entry) => entry.runtime.promptSubmitted)) {
+      expect(browser.preSubmitVerification).toEqual(evidence);
+    }
+    expect(sessionStoreMock.updateSession.mock.calls.at(-1)?.[1]).toMatchObject({
+      status: "completed",
+    });
+  });
+
+  test("keeps plain browser runs without pre-submit evidence", async () => {
+    sessionStoreMock.updateSession.mockClear();
+    vi.mocked(runBrowserSessionExecution).mockImplementationOnce(async (_args, deps) => {
+      await deps?.persistRuntimeHint?.({ chromePort: 9222, promptSubmitted: true });
+      return {
+        usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 },
+        elapsedMs: 10,
+        runtime: { chromePort: 9222, promptSubmitted: true },
+        answerText: "Answer",
+      };
+    });
+
+    await performSessionRun({
+      sessionMeta: baseSessionMeta,
+      runOptions: baseRunOptions,
+      mode: "browser",
+      browserConfig: { chromePath: null },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+
+    for (const call of sessionStoreMock.updateSession.mock.calls) {
+      expect(call[1]?.browser?.preSubmitVerification).toBeUndefined();
+    }
+  });
+
   test("invokes browser runner when mode is browser", async () => {
     vi.mocked(runBrowserSessionExecution).mockResolvedValue({
       usage: { inputTokens: 100, outputTokens: 50, reasoningTokens: 0, totalTokens: 150 },

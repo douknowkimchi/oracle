@@ -368,6 +368,7 @@ export async function attachSession(
           config: metadata.browser?.config,
           runtime,
           modelSelection: metadata.browser?.modelSelection,
+          preSubmitVerification: metadata.browser?.preSubmitVerification,
           warnings: metadata.browser?.warnings,
         },
         artifacts,

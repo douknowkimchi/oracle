@@ -86,6 +86,67 @@ describe("runBrowserSessionExecution", () => {
     expect(log).toHaveBeenCalled();
   });
 
+  test("forwards pre-submit evidence in the same hint as promptSubmitted", async () => {
+    const persistRuntimeHint = vi.fn();
+    const evidence = {
+      requestedModel: "gpt-6",
+      resolvedModelLabel: "GPT-6",
+      modelChecked: true,
+      requestedEffort: "pro" as const,
+      observedEffortIndex: 4,
+      observedEffortLabel: "Pro",
+      effortRangeMin: 0,
+      effortRangeMax: 4,
+      deepResearchRequested: true,
+      deepResearchTokenPresent: true,
+      attachmentCount: 0,
+      verified: true,
+      stoppedBeforeSubmit: false,
+      mismatches: [],
+      capturedAt: "2026-11-13T00:00:00.000Z",
+    };
+    const executeBrowser = vi.fn(async (options) => {
+      await options.runtimeHintCb?.({ chromePort: 9999, promptSubmitted: false });
+      await options.runtimeHintCb?.(
+        { chromePort: 9999, promptSubmitted: true },
+        undefined,
+        evidence,
+      );
+      return {
+        answerText: "ok",
+        answerMarkdown: "ok",
+        tookMs: 1000,
+        answerTokens: 1,
+        answerChars: 2,
+        promptSubmitted: true,
+        preSubmitVerification: evidence,
+      };
+    });
+
+    await runBrowserSessionExecution(
+      { runOptions: baseRunOptions, browserConfig: baseConfig, cwd: "/repo", log: vi.fn() },
+      {
+        assemblePrompt: async () => ({
+          markdown: "prompt",
+          composerText: "prompt",
+          estimatedInputTokens: 1,
+          attachments: [],
+          inlineFileCount: 0,
+          tokenEstimateIncludesInlineFiles: false,
+          attachmentsPolicy: "auto",
+          attachmentMode: "inline",
+          fallback: null,
+        }),
+        executeBrowser,
+        persistRuntimeHint,
+      },
+    );
+
+    expect(persistRuntimeHint.mock.calls).toEqual([
+      [expect.objectContaining({ promptSubmitted: false })],
+      [expect.objectContaining({ promptSubmitted: true }), undefined, evidence],
+    ]);
+  });
   test("passes browser resume conversation URL to executeBrowser", async () => {
     const executeBrowser = vi.fn(async () => ({
       answerText: "ok",
