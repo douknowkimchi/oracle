@@ -2,6 +2,16 @@
 
 ## 0.16.2 — Unreleased
 
+### Added
+
+- Browser: `--model gpt-6` selects the exact `GPT-6` row in ChatGPT's model submenu; unknown GPT-6 variants fail instead of falling back to another model.
+- Browser: `--browser-stop-before-submit` runs the full selection and prompt-entry flow, verifies the composer, clears it and stops without sending; `browser.preSubmitVerification` records the observed model, effort, Deep Research token and attachment count.
+
+### Changed
+
+- Browser: `--browser-thinking-time` now targets ChatGPT's five-step effort slider (`instant`, `medium`, `high`, `extra-high`, `pro`). Legacy names map to fixed steps (`light`→instant, `standard`→medium, `extended`→high, `heavy`→extra-high); `heavy` no longer selects Pro. Explicit model, effort and Deep Research requests are re-verified right before send, and the run fails instead of continuing with ChatGPT's default.
+- Browser: an explicit thinking time is applied in Deep Research runs as well (upstream #404).
+
 ### Fixed
 
 - Browser: run long local Pro consultations in a detached worker while the CLI remains attached to its session log, so unexpected foreground termination cannot stop answer capture; Ctrl-C still cancels the worker. Thanks @Rokurolize!

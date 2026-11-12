@@ -1,4 +1,4 @@
-﻿# Windows work notes
+# Windows work notes
 
 Read this file whenever you're working from Windows and add new findings so the next agent can stay unblocked.
 
@@ -11,3 +11,4 @@ Read this file whenever you're working from Windows and add new findings so the 
 Future Windows gotchas belong here. Update this doc when you learn something new.
 
 - ChatGPT sidebar/history labels can include phrases like "Login setup instruction"; login probes must match exact auth CTAs, not any visible text starting with login, or manual-login automation loops forever before typing.
+- `tests/mcp/utils.test.ts` symlink cases fail with `EPERM: operation not permitted, symlink` unless Windows Developer Mode (or an elevated shell) allows symlink creation; they fail the same way on an unmodified checkout.
