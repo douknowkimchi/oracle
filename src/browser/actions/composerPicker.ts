@@ -66,7 +66,11 @@ export interface PickerSliderState {
   max: number | null;
   value: number | null;
   valueText: string | null;
-  /** Row or slider locked: aria-disabled/data-disabled/data-locked, inert or aria-hidden. */
+  /**
+   * Power row or slider locked: row aria-disabled/data-disabled or an inert/aria-hidden row
+   * (or ancestor); slider aria-disabled/data-locked/inert on itself or an ancestor. The slider's
+   * own aria-hidden is not a lock (the observed thumb always carries it).
+   */
   disabled: boolean;
 }
 
@@ -207,15 +211,25 @@ function buildPickerStateExpression(): string {
     const toggle = menu.querySelector('${VIEW_TOGGLE_SELECTOR}');
     const row = menu.querySelector('${POWER_ROW_SELECTOR}');
     const slider = row?.querySelector('[role="slider"]') ?? null;
-    const locked = (node) =>
-      Boolean(node) && (
-        node.getAttribute('aria-disabled') === 'true' ||
-        node.hasAttribute('data-disabled') ||
-        Boolean(node.closest?.('[inert]')) ||
-        Boolean(node.closest?.('[aria-hidden="true"]')) ||
-        Boolean(node.closest?.('[data-locked="true"]')) ||
-        Boolean(node.closest?.('[aria-disabled="true"]'))
-      );
+    // The slider thumb is always aria-hidden="true" on the product page, so aria-hidden is a
+    // lock only on the Power row or its ancestors (the advanced view hides the whole area).
+    const powerLockSignals = () => {
+      const signals = [];
+      if (row) {
+        if (row.getAttribute('aria-disabled') === 'true') signals.push('row-aria-disabled');
+        if (row.hasAttribute('data-disabled')) signals.push('row-data-disabled');
+        if (row.closest?.('[inert]')) signals.push('row-inert');
+        if (row.closest?.('[aria-hidden="true"]')) signals.push('row-aria-hidden');
+      }
+      if (slider) {
+        if (slider.hasAttribute('data-disabled')) signals.push('slider-data-disabled');
+        if (slider.closest?.('[aria-disabled="true"]')) signals.push('slider-aria-disabled');
+        if (slider.closest?.('[data-locked="true"]')) signals.push('slider-data-locked');
+        if (slider.closest?.('[inert]')) signals.push('slider-inert');
+      }
+      return signals;
+    };
+    const lockSignals = powerLockSignals();
     const rows = Array.from(menu.querySelectorAll('${MODEL_ROW_SELECTOR}')).map((radio) => {
       const point = pickerHit(radio) ?? { x: 0, y: 0, hit: false };
       return {
@@ -237,7 +251,7 @@ function buildPickerStateExpression(): string {
             max: parseInteger(slider.getAttribute('aria-valuemax')),
             value: parseInteger(slider.getAttribute('aria-valuenow')),
             valueText: pickerText(slider.getAttribute('aria-valuetext')) || null,
-            disabled: locked(row) || locked(slider),
+            disabled: lockSignals.length > 0,
           }
         : null,
       rows,
@@ -245,6 +259,7 @@ function buildPickerStateExpression(): string {
         ...base.diagnostic,
         menu: pickerDescribe(menu),
         powerRow: pickerDescribe(row),
+        powerLockSignals: lockSignals,
       },
     };
   })()`;

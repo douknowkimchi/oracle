@@ -190,6 +190,8 @@ export interface FakePickerOptions {
   reopenInAdvanced?: boolean;
   /** Effort row locked even in the simple view (data-locked="true"). */
   sliderAlwaysDisabled?: boolean;
+  /** Power row carries aria-disabled="true" while the view is simple. */
+  powerRowDisabled?: boolean;
   /** Escape leaves the menu open. */
   escapeIgnored?: boolean;
   /** Prompt text already in the editor paragraph. */
@@ -292,6 +294,7 @@ export class FakePickerDom {
         "aria-label": "Power",
         "data-reasoning-slider": "true",
         tabindex: "0",
+        ...(options.powerRowDisabled ? { "aria-disabled": "true" } : {}),
       });
       this.lockNode = el("span", {
         "aria-disabled": options.sliderAlwaysDisabled ? "true" : "false",
@@ -304,6 +307,8 @@ export class FakePickerDom {
         "aria-valuemax": effort.max,
         "aria-valuenow": effort.value,
         tabindex: "-1",
+        // Observed: the slider thumb itself is always aria-hidden, locked or not.
+        "aria-hidden": "true",
       });
       sliderWrap.append(this.slider);
       this.lockNode.append(sliderWrap);
@@ -435,7 +440,7 @@ export class FakePickerDom {
         this.powerRow.setAttribute("aria-disabled", "true");
         this.powerRow.setAttribute("data-disabled", "");
       } else {
-        this.powerRow.removeAttribute("aria-disabled");
+        if (!this.options.powerRowDisabled) this.powerRow.removeAttribute("aria-disabled");
         this.powerRow.removeAttribute("data-disabled");
       }
     }

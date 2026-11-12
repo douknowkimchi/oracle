@@ -242,7 +242,7 @@ function usableSlider(
     throw new EffortSelectionFailure(
       opened.slider.disabled ? "effort-disabled" : "effort-range-invalid",
       `Thinking time: ${problem} while selecting ${THINKING_TIME_LABELS[level]}.`,
-      { observed: opened.slider },
+      { observed: opened.slider, diagnostic: opened.diagnostic },
     );
   }
   return opened.slider as UsableSliderState;

@@ -161,8 +161,45 @@ describe("ensureThinkingTime on the observed Power row", () => {
   it("fails when the slider is locked", async () => {
     const { dom, Runtime, Input, logger } = setup({ sliderAlwaysDisabled: true });
 
-    await expectEffortFailure(ensureThinkingTime(Runtime, Input, "pro", logger), "effort-disabled");
+    const error = await expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "pro", logger),
+      "effort-disabled",
+    );
     expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual([]);
+    const details = error.details as { diagnostic?: { powerLockSignals?: string[] } };
+    expect(details.diagnostic?.powerLockSignals).toEqual([
+      "slider-aria-disabled",
+      "slider-data-locked",
+    ]);
+  });
+
+  it("fails when the Power row itself is aria-disabled in the simple view", async () => {
+    const { dom, Runtime, Input, logger } = setup({ powerRowDisabled: true });
+
+    const error = await expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "pro", logger),
+      "effort-disabled",
+    );
+    expect(dom.view).toBe("simple");
+    expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual([]);
+    const details = error.details as { diagnostic?: { powerLockSignals?: string[] } };
+    expect(details.diagnostic?.powerLockSignals).toContain("row-aria-disabled");
+  });
+
+  it("does not treat the slider thumb's own aria-hidden as a lock", async () => {
+    const { dom, Runtime, Input, logger } = setup({ effort: { min: "0", max: "4", value: "4" } });
+    dom.toggleMenu();
+    expect(dom.slider?.getAttribute("aria-hidden")).toBe("true");
+    dom.closeMenu();
+
+    await expect(readEffortSlider(Runtime, Input)).resolves.toMatchObject({
+      ok: true,
+      state: { value: 4, disabled: false },
+    });
+    await expect(ensureThinkingTime(Runtime, Input, "pro", logger)).resolves.toMatchObject({
+      status: "already-selected",
+      index: 4,
+    });
   });
 
   it("fails when the composer has no model trigger", async () => {
