@@ -8,7 +8,17 @@ import {
 import { BrowserAutomationError } from "../../oracle/errors.js";
 import { logDomFailure } from "../domDebug.js";
 import { delay } from "../utils.js";
-import { buildComposerPickerHelpers, type ComposerPickerFailure } from "./composerPicker.js";
+import {
+  closePicker,
+  focusPowerRow,
+  openPicker,
+  pickerFailure,
+  pressPickerKey,
+  readPickerState,
+  type ComposerPickerFailure,
+  type PickerSliderState,
+  type PickerState,
+} from "./composerPicker.js";
 
 /** The current ChatGPT effort slider exposes exactly five steps: Instant..Pro. */
 export const EFFORT_SLIDER_MIN = 0;
@@ -16,28 +26,7 @@ export const EFFORT_SLIDER_MAX = THINKING_TIME_LEVELS.length - 1;
 const KEY_CHANGE_TIMEOUT_MS = 5_000;
 const KEY_CHANGE_POLL_MS = 50;
 
-const ARROW_KEYS = {
-  ArrowRight: {
-    key: "ArrowRight",
-    code: "ArrowRight",
-    windowsVirtualKeyCode: 39,
-    nativeVirtualKeyCode: 39,
-  },
-  ArrowLeft: {
-    key: "ArrowLeft",
-    code: "ArrowLeft",
-    windowsVirtualKeyCode: 37,
-    nativeVirtualKeyCode: 37,
-  },
-} as const;
-
-export interface EffortSliderState {
-  min: number | null;
-  max: number | null;
-  value: number | null;
-  valueText: string | null;
-  disabled: boolean;
-}
+export type EffortSliderState = PickerSliderState;
 
 export type EffortSliderRead =
   | { ok: true; state: EffortSliderState }
@@ -49,13 +38,6 @@ export interface EffortSelectionResult {
   label: string;
   status: "already-selected" | "switched";
 }
-
-type SliderOperation = "read" | "focus" | "read-and-close" | "close";
-
-type SliderProbe =
-  | (EffortSliderState & { status: "ok"; focused?: boolean })
-  | { status: "closed" }
-  | ComposerPickerFailure;
 
 const BROWSER_THINKING_LOG_PREFIX = "[browser] Thinking time:";
 
@@ -89,15 +71,16 @@ export async function ensureThinkingTime(
 /** Reads the effort slider through the composer picker and closes the picker again. */
 export async function readEffortSlider(
   Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
 ): Promise<EffortSliderRead> {
-  const probe = await probeSlider(Runtime, "read-and-close");
-  if (probe.status === "failed") {
-    return { ok: false, failure: probe };
+  const opened = await openEffortView(Runtime, Input);
+  if ("status" in opened) return { ok: false, failure: opened };
+  const slider = opened.slider;
+  if (!(await closePicker(Runtime, Input))) {
+    return { ok: false, failure: pickerFailure("menu-not-closed", opened.diagnostic) };
   }
-  if (probe.status !== "ok") {
-    return { ok: false, failure: { status: "failed", reason: "slider-not-found" } };
-  }
-  return { ok: true, state: toState(probe) };
+  if (!slider) return { ok: false, failure: pickerFailure("slider-not-found", opened.diagnostic) };
+  return { ok: true, state: slider };
 }
 
 /** Problems that make an observed slider unusable as evidence, in check order. */
@@ -139,6 +122,26 @@ class EffortSelectionFailure extends Error {
   }
 }
 
+/**
+ * Opens the picker in the view that shows the effort row. The advanced (model) view locks the
+ * row, so an advanced view left over from model selection is closed and reopened once.
+ */
+async function openEffortView(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+): Promise<PickerState | ComposerPickerFailure> {
+  let opened = await openPicker(Runtime, Input);
+  if ("status" in opened) return opened;
+  if (opened.view === "advanced") {
+    if (!(await closePicker(Runtime, Input))) {
+      return pickerFailure("menu-not-closed", opened.diagnostic);
+    }
+    opened = await openPicker(Runtime, Input);
+    if ("status" in opened) return opened;
+  }
+  return opened;
+}
+
 async function selectEffort(
   Runtime: ChromeClient["Runtime"],
   Input: ChromeClient["Input"],
@@ -147,33 +150,32 @@ async function selectEffort(
 ): Promise<EffortSelectionResult> {
   const target = thinkingTimeLevelIndex(level);
   const label = THINKING_TIME_LABELS[level];
-  let state = await readUsableSlider(Runtime, "read", level);
+  let state = usableSlider(await openEffortView(Runtime, Input), level);
   const initial = state.value;
   // Each key press must move one step toward the target, so at most max-min presses are needed.
   for (let presses = 0; state.value !== target; presses += 1) {
     if (presses >= EFFORT_SLIDER_MAX - EFFORT_SLIDER_MIN) {
       throw effortMismatch("effort-step-limit", level, state);
     }
-    const focused = await readUsableSlider(Runtime, "focus", level);
-    if (focused.value !== state.value) {
-      state = focused;
-      continue;
+    if (!(await focusPowerRow(Runtime))) {
+      throw pickerFailureToEffortFailure(pickerFailure("focus-failed"), level);
     }
     const previous = state.value;
     const key = target > previous ? "ArrowRight" : "ArrowLeft";
-    await pressKey(Input, key);
+    await pressPickerKey(Input, key);
     state = await waitForSliderChange(Runtime, previous, level);
     if (!sliderAdvancedTowardTarget(previous, state.value, target)) {
       throw effortMismatch("effort-key-no-effect", level, state, { key, before: previous });
     }
   }
-  const closed = await probeSlider(Runtime, "close");
-  if (closed.status === "failed") {
-    throw pickerFailureToEffortFailure(closed, level);
+  if (!(await closePicker(Runtime, Input))) {
+    throw pickerFailureToEffortFailure(pickerFailure("menu-not-closed"), level);
   }
-  const confirmed = await readUsableSlider(Runtime, "read-and-close", level);
-  if (confirmed.value !== target) {
-    throw effortMismatch("effort-not-persisted", level, confirmed);
+  const confirmed = await readEffortSlider(Runtime, Input);
+  if (!confirmed.ok) throw pickerFailureToEffortFailure(confirmed.failure, level);
+  const confirmedState = usableSlider({ ...emptyStateFor(confirmed.state) }, level);
+  if (confirmedState.value !== target) {
+    throw effortMismatch("effort-not-persisted", level, confirmedState);
   }
   const status = initial === target ? "already-selected" : "switched";
   logger(
@@ -182,52 +184,68 @@ async function selectEffort(
   return { level, index: target, label, status };
 }
 
+function emptyStateFor(slider: EffortSliderState): PickerState {
+  return {
+    composerFound: true,
+    triggerCount: 1,
+    trigger: null,
+    menuBound: true,
+    view: "simple",
+    viewToggle: null,
+    slider,
+    rows: [],
+    diagnostic: {},
+  };
+}
+
 async function waitForSliderChange(
   Runtime: ChromeClient["Runtime"],
   previous: number,
   level: ThinkingTimeLevel,
 ): Promise<UsableSliderState> {
   const deadline = Date.now() + KEY_CHANGE_TIMEOUT_MS;
-  let state = await readUsableSlider(Runtime, "read", level);
+  let state = usableSlider(await requireBoundMenu(Runtime), level);
   while (state.value === previous && Date.now() < deadline) {
     await delay(KEY_CHANGE_POLL_MS);
-    state = await readUsableSlider(Runtime, "read", level);
+    state = usableSlider(await requireBoundMenu(Runtime), level);
   }
   return state;
 }
 
-async function pressKey(Input: ChromeClient["Input"], key: keyof typeof ARROW_KEYS): Promise<void> {
-  const event = ARROW_KEYS[key];
-  await Input.dispatchKeyEvent({ type: "rawKeyDown", ...event });
-  await Input.dispatchKeyEvent({ type: "keyUp", ...event });
+/** While pressing keys the menu must stay open; a closed or replaced menu is a failure. */
+async function requireBoundMenu(
+  Runtime: ChromeClient["Runtime"],
+): Promise<PickerState | ComposerPickerFailure> {
+  const state = await readPickerState(Runtime);
+  return state.menuBound ? state : pickerFailure("menu-not-bound", state.diagnostic);
 }
 
 type UsableSliderState = EffortSliderState & { value: number };
 
-async function readUsableSlider(
-  Runtime: ChromeClient["Runtime"],
-  operation: Exclude<SliderOperation, "close">,
+function usableSlider(
+  opened: PickerState | ComposerPickerFailure,
   level: ThinkingTimeLevel,
-): Promise<UsableSliderState> {
-  const probe = await probeSlider(Runtime, operation);
-  if (probe.status === "failed") {
-    throw pickerFailureToEffortFailure(probe, level);
-  }
-  if (probe.status !== "ok") {
-    throw new EffortSelectionFailure("effort-probe-invalid", "Thinking time: unexpected probe.", {
-      probe,
-    });
-  }
-  const state = toState(probe);
-  const problem = describeEffortSliderProblem(state);
-  if (problem) {
+): UsableSliderState {
+  if ("status" in opened) throw pickerFailureToEffortFailure(opened, level);
+  if (opened.view === "advanced") {
     throw new EffortSelectionFailure(
-      state.disabled ? "effort-disabled" : "effort-range-invalid",
-      `Thinking time: ${problem} while selecting ${THINKING_TIME_LABELS[level]}.`,
-      { observed: state },
+      "effort-disabled",
+      `Thinking time: the picker stayed in the model view while selecting ${THINKING_TIME_LABELS[level]}.`,
+      { view: opened.view, diagnostic: opened.diagnostic },
     );
   }
-  return state as UsableSliderState;
+  if (!opened.slider) {
+    throw pickerFailureToEffortFailure(pickerFailure("slider-not-found", opened.diagnostic), level);
+  }
+  const problem = describeEffortSliderProblem(opened.slider);
+  if (problem) {
+    throw new EffortSelectionFailure(
+      opened.slider.disabled ? "effort-disabled" : "effort-range-invalid",
+      `Thinking time: ${problem} while selecting ${THINKING_TIME_LABELS[level]}.`,
+      { observed: opened.slider },
+    );
+  }
+  return opened.slider as UsableSliderState;
 }
 
 function pickerFailureToEffortFailure(
@@ -252,80 +270,4 @@ function effortMismatch(
     `Thinking time: slider is at ${state.value} instead of ${thinkingTimeLevelIndex(level)} (${THINKING_TIME_LABELS[level]}).`,
     { observed: state, ...extra },
   );
-}
-
-function toState(probe: EffortSliderState): EffortSliderState {
-  return {
-    min: probe.min,
-    max: probe.max,
-    value: probe.value,
-    valueText: probe.valueText,
-    disabled: probe.disabled,
-  };
-}
-
-async function probeSlider(
-  Runtime: ChromeClient["Runtime"],
-  operation: SliderOperation,
-): Promise<SliderProbe> {
-  const outcome = await Runtime.evaluate({
-    expression: buildEffortSliderExpression(operation),
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  const value = outcome.result?.value as SliderProbe | undefined;
-  return value ?? { status: "failed", reason: "menu-not-bound", diagnostic: { emptyResult: true } };
-}
-
-function buildEffortSliderExpression(operation: SliderOperation): string {
-  return `(async () => {
-    ${buildComposerPickerHelpers()}
-    const OPERATION = ${JSON.stringify(operation)};
-    if (OPERATION === 'close') {
-      const composer = pickerComposerForm();
-      if (!composer) return pickerFailure('composer-not-found');
-      const trigger = pickerTrigger(composer.form);
-      if (!trigger) return pickerFailure('trigger-not-found');
-      if (!(await pickerCloseAll(trigger))) {
-        return pickerFailure('menu-not-closed', { trigger: pickerDescribe(trigger) });
-      }
-      return { status: 'closed' };
-    }
-    let opened = await pickerOpenMenu();
-    if (opened.failure) return opened.failure;
-    // The slider is locked while the model submenu is open: close the picker and reopen it once.
-    if (pickerSubTriggers(opened.menu).some(pickerIsOpen)) {
-      await pickerCloseAll(opened.trigger);
-      opened = await pickerOpenMenu();
-      if (opened.failure) return opened.failure;
-    }
-    const state = pickerReadSlider(opened.menu);
-    if (!state) {
-      const failure = pickerFailure('slider-not-found', {
-        menu: pickerDescribe(opened.menu),
-        items: Array.from(opened.menu.querySelectorAll('[role]')).slice(0, 20).map(pickerDescribe),
-      });
-      await pickerCloseAll(opened.trigger);
-      return failure;
-    }
-    if (OPERATION === 'focus') {
-      // Keys go to the slider's menu row, as in the verified Webdex flow.
-      const parts = pickerSlider(opened.menu);
-      const target = parts.control || parts.slider;
-      try {
-        target.focus?.({ preventScroll: true });
-      } catch {}
-      const active = document.activeElement;
-      const focused = Boolean(active) && (active === target || Boolean(target.contains?.(active)));
-      if (!focused) {
-        return pickerFailure('focus-failed', { target: pickerDescribe(target), active: pickerDescribe(active) });
-      }
-      return { status: 'ok', ...state, focused: true };
-    }
-    if (OPERATION === 'read-and-close' && !(await pickerCloseAll(opened.trigger))) {
-      // An open picker can swallow the later send click; an unclosed read is not evidence.
-      return pickerFailure('menu-not-closed', { trigger: pickerDescribe(opened.trigger) });
-    }
-    return { status: 'ok', ...state };
-  })()`;
 }

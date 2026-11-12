@@ -80,27 +80,42 @@ describe("activateDeepResearch", () => {
     mockLogger = createMockLogger();
   });
 
+  /** Older composer: no Deep Research mention yet and no "Add files and more" control. */
+  const queueComposerWithoutAddContext = () => {
+    mockRuntime.evaluate
+      .mockResolvedValueOnce({
+        result: {
+          value: { composerFound: true, present: false, bodyTextLength: 0, occurrences: [] },
+        },
+      })
+      .mockResolvedValueOnce({ result: { value: { found: false } } });
+  };
   it("activates Deep Research when all steps succeed", async () => {
+    queueComposerWithoutAddContext();
     mockRuntime.evaluate.mockResolvedValueOnce({
       result: { value: { status: "activated" } },
     });
     await expect(
       activateDeepResearch(mockRuntime as never, mockInput as never, mockLogger),
     ).resolves.toBeUndefined();
-    expect(mockLogger).toHaveBeenCalledWith("Deep Research mode activated");
+    expect(mockLogger).toHaveBeenCalledWith("Deep Research mode activated (composer plus menu)");
   });
 
   it("returns early when already active", async () => {
+    queueComposerWithoutAddContext();
     mockRuntime.evaluate.mockResolvedValueOnce({
       result: { value: { status: "already-active" } },
     });
     await expect(
       activateDeepResearch(mockRuntime as never, mockInput as never, mockLogger),
     ).resolves.toBeUndefined();
-    expect(mockLogger).toHaveBeenCalledWith("Deep Research mode already active");
+    expect(mockLogger).toHaveBeenCalledWith(
+      "Deep Research mode already active (composer plus menu)",
+    );
   });
 
   it("throws when plus button is missing", async () => {
+    queueComposerWithoutAddContext();
     mockRuntime.evaluate.mockResolvedValueOnce({
       result: { value: { status: "plus-button-missing" } },
     });
@@ -110,6 +125,7 @@ describe("activateDeepResearch", () => {
   });
 
   it("throws with available options when Deep Research item missing", async () => {
+    queueComposerWithoutAddContext();
     mockRuntime.evaluate.mockResolvedValueOnce({
       result: {
         value: {
@@ -124,6 +140,7 @@ describe("activateDeepResearch", () => {
   });
 
   it("throws when pill does not confirm", async () => {
+    queueComposerWithoutAddContext();
     mockRuntime.evaluate.mockResolvedValueOnce({
       result: { value: { status: "pill-not-confirmed" } },
     });
@@ -135,6 +152,7 @@ describe("activateDeepResearch", () => {
   it("falls back to a trusted point click when the menu row ignores synthetic clicks", async () => {
     const dispatchMouseEvent = vi.fn(async () => undefined);
     mockInput = { dispatchMouseEvent };
+    queueComposerWithoutAddContext();
     mockRuntime.evaluate
       .mockResolvedValueOnce({
         result: { value: { status: "pill-not-confirmed", clickPoint: { x: 12, y: 34 } } },
@@ -152,10 +170,11 @@ describe("activateDeepResearch", () => {
       button: "left",
       clickCount: 1,
     });
-    expect(mockLogger).toHaveBeenCalledWith("Deep Research mode activated");
+    expect(mockLogger).toHaveBeenCalledWith("Deep Research mode activated (composer plus menu)");
   });
 
   it("throws on unexpected result", async () => {
+    queueComposerWithoutAddContext();
     mockRuntime.evaluate.mockResolvedValueOnce({
       result: { value: { status: "unknown-status" } },
     });

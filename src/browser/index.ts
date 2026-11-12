@@ -1520,7 +1520,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       requestedModel: options.requestedModel,
     });
     const preSubmitGate = preSubmitPlan
-      ? createPreSubmitGate(Runtime, preSubmitPlan, logger, {
+      ? createPreSubmitGate(Runtime, Input, preSubmitPlan, logger, {
           isTransportFailure: isBrowserTransportFailure,
           onVerified: (evidence) => {
             preSubmitEvidence = evidence;
@@ -1536,7 +1536,15 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           raceWithDisconnect(
             withRetries(
               () =>
-                ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
+                ensureModelSelection(
+                  Runtime,
+                  config.desiredModel as string,
+                  logger,
+                  modelStrategy,
+                  {
+                    input: Input,
+                  },
+                ),
               {
                 retries: 2,
                 delayMs: 300,
@@ -1687,6 +1695,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
         onPromptSubmitted: markPromptSubmitted,
+        onSendInput: preSubmitGate ? () => preSubmitGate.markSendInput() : undefined,
         beforeSend: preSubmitGate?.beforeSend({
           attachmentCount: submissionAttachments.length,
         }),
@@ -1703,7 +1712,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         state: providerState,
       });
       if (preSubmitGate?.stopped) {
-        const stopCleanupWarnings = await clearComposerAfterStop(Runtime, logger, {
+        const stopCleanupWarnings = await clearComposerAfterStop(Runtime, Input, logger, {
           attachmentCount: submissionAttachments.length,
         });
         return {
@@ -3188,7 +3197,7 @@ async function runRemoteBrowserMode(
       requestedModel: options.requestedModel,
     });
     const preSubmitGate = preSubmitPlan
-      ? createPreSubmitGate(Runtime, preSubmitPlan, logger, {
+      ? createPreSubmitGate(Runtime, Input, preSubmitPlan, logger, {
           isTransportFailure: isBrowserTransportFailure,
           onVerified: (evidence) => {
             preSubmitEvidence = evidence;
@@ -3203,7 +3212,9 @@ async function runRemoteBrowserMode(
         () =>
           withRetries(
             () =>
-              ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy),
+              ensureModelSelection(Runtime, config.desiredModel as string, logger, modelStrategy, {
+                input: Input,
+              }),
             {
               retries: 2,
               delayMs: 300,
@@ -3313,6 +3324,7 @@ async function runRemoteBrowserMode(
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
         onPromptSubmitted: markPromptSubmitted,
+        onSendInput: preSubmitGate ? () => preSubmitGate.markSendInput() : undefined,
         beforeSend: preSubmitGate?.beforeSend({
           attachmentCount: submissionAttachments.length,
         }),
@@ -3329,7 +3341,7 @@ async function runRemoteBrowserMode(
         state: providerState,
       });
       if (preSubmitGate?.stopped) {
-        const stopCleanupWarnings = await clearComposerAfterStop(Runtime, logger, {
+        const stopCleanupWarnings = await clearComposerAfterStop(Runtime, Input, logger, {
           attachmentCount: submissionAttachments.length,
         });
         return {

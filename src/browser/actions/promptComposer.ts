@@ -48,6 +48,8 @@ export async function submitPrompt(
     attachmentTimeoutMs?: number | null;
     onPromptSubmitted?: () => Promise<void> | void;
     beforeSend?: () => Promise<BeforeSendDecision>;
+    /** Called immediately before the first send input (click or Enter) is dispatched. */
+    onSendInput?: () => void;
   },
   prompt: string,
   logger: BrowserLogger,
@@ -228,6 +230,7 @@ export async function submitPrompt(
     deps?.attachmentNames,
     deps?.attachmentTimeoutMs,
     deps.beforeSend,
+    deps.onSendInput,
   );
   if (attempt === "button-missing" && deps.beforeSend && (await deps.beforeSend()) === "stop") {
     attempt = "stopped";
@@ -237,6 +240,7 @@ export async function submitPrompt(
     return null;
   }
   if (attempt === "button-missing") {
+    deps.onSendInput?.();
     await input.dispatchKeyEvent({
       type: "keyDown",
       ...ENTER_KEY_EVENT,
@@ -678,6 +682,7 @@ async function attemptSendButton(
   attachmentNames?: AttachmentReadyInput[],
   attachmentTimeoutMs?: number | null,
   beforeSend?: () => Promise<BeforeSendDecision>,
+  onSendInput?: () => void,
 ): Promise<SendAttempt> {
   const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
   const attachmentsReady = async (): Promise<boolean> => {
@@ -704,6 +709,7 @@ async function attemptSendButton(
     return { status: value?.status === "no-rect" ? "no-rect" : "missing" };
   };
   const click = async (location: SendButtonLocation): Promise<boolean> => {
+    onSendInput?.();
     if (location.status === "point") {
       await clickTrustedPoint(Runtime, Input, location.x, location.y);
       return true;

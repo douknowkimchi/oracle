@@ -1117,6 +1117,7 @@ describe("performSessionRun", () => {
     async (stage) => {
       const gate = createPreSubmitGate(
         { evaluate: vi.fn() } as never,
+        { dispatchKeyEvent: vi.fn(), dispatchMouseEvent: vi.fn() } as never,
         {
           requestedModel: "gpt-6",
           modelLabel: "GPT-6",

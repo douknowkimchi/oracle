@@ -13,7 +13,7 @@ import { buildConversationTurnListExpression } from "../conversationTurns.js";
 import { delay } from "../utils.js";
 import { isDeepResearchIncompleteText } from "../deepResearchResult.js";
 import { buildClickDispatcher } from "./domEvents.js";
-import { buildComposerPickerHelpers } from "./composerPicker.js";
+import { buildComposerPickerHelpers, clickPoint } from "./composerPicker.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./assistantResponse.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 
@@ -25,14 +25,24 @@ type ActivateOutcome =
   | { status: "pill-not-confirmed"; clickPoint?: { x?: number; y?: number } };
 
 /**
- * Activates Deep Research mode through ChatGPT's composer tools menu and
- * verifies the selected tool pill before prompt submission.
+ * Activates Deep Research before the prompt is typed. On the observed composer the
+ * "Add files and more" list inserts an inline mention, confirmed by reading that mention; layouts
+ * with the older composer plus menu keep the pill-confirmed path below.
  */
 export async function activateDeepResearch(
   Runtime: ChromeClient["Runtime"],
   Input: ChromeClient["Input"],
   logger: BrowserLogger,
 ): Promise<void> {
+  if ((await readDeepResearchComposerToken(Runtime)).present) {
+    logger("Deep Research mode already active (composer mention)");
+    return;
+  }
+  const addContext = await locateDeepResearchTarget(Runtime, "add-context");
+  if (addContext.found) {
+    await activateViaAddContext(Runtime, Input, logger, addContext);
+    return;
+  }
   const expression = buildActivateDeepResearchExpression();
   const outcome = await Runtime.evaluate({
     expression,
@@ -43,10 +53,10 @@ export async function activateDeepResearch(
 
   switch (result?.status) {
     case "activated":
-      logger("Deep Research mode activated");
+      logger("Deep Research mode activated (composer plus menu)");
       return;
     case "already-active":
-      logger("Deep Research mode already active");
+      logger("Deep Research mode already active (composer plus menu)");
       return;
     case "plus-button-missing":
       throw new BrowserAutomationError(
@@ -68,7 +78,7 @@ export async function activateDeepResearch(
       if (typeof point?.x === "number" && typeof point.y === "number") {
         await clickTrustedPoint(Runtime, Input, point.x, point.y);
         if (await waitForDeepResearchPill(Runtime)) {
-          logger("Deep Research mode activated");
+          logger("Deep Research mode activated (composer plus menu)");
           return;
         }
       }
@@ -84,42 +94,136 @@ export async function activateDeepResearch(
   }
 }
 
+/** Observed "Add files and more" control and its Deep Research list item (not a role=menu). */
+const ADD_CONTEXT_SELECTOR =
+  'button[aria-label="Add files and more"][data-composer-navigation-target="add-context"]';
+const DEEP_RESEARCH_LIST_ITEM_SELECTOR =
+  'button[data-list-navigation-item="true"][data-plugin-impression-id="connector_openai_deep_research"]';
+const DEEP_RESEARCH_TARGET_WAIT_MS = 5_000;
+
+type DeepResearchTarget =
+  | { found: false; diagnostic?: Record<string, unknown> }
+  | { found: true; x: number; y: number; hit: boolean; open: boolean; count: number };
+
+async function locateDeepResearchTarget(
+  Runtime: ChromeClient["Runtime"],
+  target: "add-context" | "list-item",
+): Promise<DeepResearchTarget> {
+  const { result } = await Runtime.evaluate({
+    expression: `(() => {
+      ${buildComposerPickerHelpers()}
+      const composer = pickerComposerForm();
+      const scope = ${JSON.stringify(target)} === "add-context" ? composer?.form : document;
+      if (!scope) return { found: false, diagnostic: { composerFound: false } };
+      const selector = ${JSON.stringify(target)} === "add-context"
+        ? ${JSON.stringify(ADD_CONTEXT_SELECTOR)}
+        : ${JSON.stringify(DEEP_RESEARCH_LIST_ITEM_SELECTOR)};
+      const nodes = Array.from(scope.querySelectorAll(selector)).filter(pickerVisible);
+      if (nodes.length !== 1) return { found: false, diagnostic: { count: nodes.length } };
+      const point = pickerHit(nodes[0]);
+      if (!point) return { found: false, diagnostic: { count: 1, rect: false } };
+      return { found: true, ...point, open: pickerIsOpen(nodes[0]), count: 1 };
+    })()`,
+    returnByValue: true,
+  });
+  return (result?.value as DeepResearchTarget | undefined) ?? { found: false };
+}
+
+async function activateViaAddContext(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  logger: BrowserLogger,
+  addContext: Extract<DeepResearchTarget, { found: true }>,
+): Promise<void> {
+  if (!addContext.open) {
+    if (!addContext.hit) {
+      throw new BrowserAutomationError(
+        'The "Add files and more" control is covered; cannot open the Deep Research list.',
+        { stage: "deep-research-activate", code: "plus-button-missing" },
+      );
+    }
+    await clickPoint(Input, addContext);
+  }
+  const item = await waitForDeepResearchTarget(Runtime, "list-item");
+  if (!item.found || !item.hit) {
+    throw new BrowserAutomationError(
+      '"Deep research" was not offered in the "Add files and more" list. This feature may require a ChatGPT Plus or Pro subscription.',
+      { stage: "deep-research-activate", code: "dropdown-item-missing", diagnostic: item },
+    );
+  }
+  await clickPoint(Input, item);
+  const deadline = Date.now() + DEEP_RESEARCH_TARGET_WAIT_MS;
+  let token = await readDeepResearchComposerToken(Runtime);
+  while (!token.present && Date.now() < deadline) {
+    await delay(200);
+    token = await readDeepResearchComposerToken(Runtime);
+  }
+  if (!token.present) {
+    logger(
+      `[browser] Pre-submit Deep Research token diagnostic: ${JSON.stringify(token.occurrences)}`,
+    );
+    throw new BrowserAutomationError(
+      "Deep Research mention did not appear in the composer after selection.",
+      { stage: "deep-research-activate", code: "pill-not-confirmed" },
+    );
+  }
+  logger("Deep Research mode activated (add-context list)");
+}
+
+async function waitForDeepResearchTarget(
+  Runtime: ChromeClient["Runtime"],
+  target: "add-context" | "list-item",
+): Promise<DeepResearchTarget> {
+  const deadline = Date.now() + DEEP_RESEARCH_TARGET_WAIT_MS;
+  let located = await locateDeepResearchTarget(Runtime, target);
+  while (!(located.found && located.hit) && Date.now() < deadline) {
+    await delay(200);
+    located = await locateDeepResearchTarget(Runtime, target);
+  }
+  return located;
+}
+
 /** Connector reference ChatGPT places in the composer once Deep Research is selected. */
 const DEEP_RESEARCH_COMPOSER_TOKEN = "app://connector_openai_deep_research";
 
 /**
- * Selected connectors render as chips in the composer form. The Webdex contract identifies a
- * selected connector by `[data-id^="plugin:"]` inside the composer form; whether the Deep
- * Research chip carries the connector URI in its attributes still needs live confirmation.
+ * Observed on the product profile: choosing Deep Research inserts an inline mention into the
+ * ProseMirror editor, `span[contenteditable="false"]` whose `app-mention-path` and
+ * `data-prompt-link-href` both equal the connector URI.
  */
-const CONNECTOR_CHIP_SELECTOR = '[data-id^="plugin:"]';
+const DEEP_RESEARCH_MENTION_ATTRIBUTES = ["app-mention-path", "data-prompt-link-href"] as const;
 
 export interface DeepResearchTokenOccurrence {
   tag: string;
   role: string | null;
+  /** Attribute names whose value contains the token (exact or not). */
   attributes: string[];
   textMatch: boolean;
   insideComposer: boolean;
-  insideEditable: boolean;
-  insideNonEditable: boolean;
-  chipDataId: string | null;
+  insideEditor: boolean;
+  /** The node's own contenteditable value (null when it inherits). */
+  contentEditable: string | null;
+  /** Nearest contenteditable boundary at or above the node ("true"/"false"/null). */
+  nearestEditableBoundary: string | null;
   accepted: boolean;
   reason: string;
 }
 
 export interface DeepResearchComposerTokenState {
   composerFound: boolean;
-  /** True only when a connector chip in the prompt's composer carries the token. */
+  /** True only when the prompt's editor holds an exact Deep Research mention node. */
   present: boolean;
+  /** Collapsed length of the editor text outside non-editable mention nodes. */
+  bodyTextLength: number;
   /** Every node holding the token string, accepted or not (bounded diagnostic). */
   occurrences: DeepResearchTokenOccurrence[];
 }
 
 /**
- * Reads whether a Deep Research connector chip is in the same composer form as the prompt
- * editor, then returns focus to that editor. Prompt text, links typed into the prompt and any
- * other editable content never count: only a visible connector chip (outside the editable text
- * or inside a non-editable decorator node) whose attributes carry the connector URI does.
+ * Reads whether the prompt's editor holds a Deep Research mention, then returns focus to that
+ * editor. Accepted only: the node itself is `contenteditable="false"` inside the editor, and
+ * `app-mention-path` or `data-prompt-link-href` equals the connector URI exactly. Prompt text,
+ * typed links and attributes on editable nodes never count.
  */
 export async function readDeepResearchComposerToken(
   Runtime: ChromeClient["Runtime"],
@@ -129,15 +233,16 @@ export async function readDeepResearchComposerToken(
     returnByValue: true,
   });
   const value = result?.value as DeepResearchComposerTokenState | undefined;
-  return value ?? { composerFound: false, present: false, occurrences: [] };
+  return value ?? { composerFound: false, present: false, bodyTextLength: 0, occurrences: [] };
 }
 
 function buildDeepResearchComposerTokenExpression(): string {
   return `(() => {
     ${buildComposerPickerHelpers()}
     const TOKEN = ${JSON.stringify(DEEP_RESEARCH_COMPOSER_TOKEN)};
-    const CHIP_SELECTOR = ${JSON.stringify(CONNECTOR_CHIP_SELECTOR)};
+    const MENTION_ATTRIBUTES = ${JSON.stringify(DEEP_RESEARCH_MENTION_ATTRIBUTES)};
     const composer = pickerComposerForm();
+    const editor = composer?.editor ?? null;
     const occurrences = [];
     let present = false;
     for (const node of document.querySelectorAll('*')) {
@@ -148,20 +253,17 @@ function buildDeepResearchComposerTokenExpression(): string {
       const textMatch = isLeaf && String(node.textContent || '').includes(TOKEN);
       if (attributes.length === 0 && !textMatch) continue;
       const insideComposer = Boolean(composer && composer.form.contains(node));
-      const chip = node.closest?.(CHIP_SELECTOR) || null;
-      const insideEditable = Boolean(node.closest?.('[contenteditable="true"]'));
-      const insideNonEditable = Boolean(node.closest?.('[contenteditable="false"]'));
-      const chipEditable =
-        chip && Boolean(chip.closest?.('[contenteditable="true"]')) &&
-        !chip.closest?.('[contenteditable="false"]');
-      let reason = 'connector-chip';
+      const insideEditor = Boolean(editor && editor !== node && editor.contains(node));
+      const boundary = node.closest?.('[contenteditable]') ?? null;
+      const nearestEditableBoundary = boundary ? boundary.getAttribute('contenteditable') : null;
+      const exactMention = MENTION_ATTRIBUTES.some((name) => node.getAttribute(name) === TOKEN);
+      let reason = 'mention';
       if (!insideComposer) reason = 'outside-composer';
-      else if (attributes.length === 0) reason = 'text-only';
-      else if (node.closest?.('a')) reason = 'inside-link';
-      else if (!chip || !composer.form.contains(chip)) reason = 'not-connector-chip';
-      else if (chipEditable) reason = 'editable-content';
-      else if (!pickerVisible(chip)) reason = 'chip-hidden';
-      const accepted = reason === 'connector-chip';
+      else if (!insideEditor) reason = 'outside-editor';
+      else if (!exactMention) reason = attributes.length === 0 ? 'text-only' : 'not-mention-attribute';
+      else if (boundary !== node || nearestEditableBoundary !== 'false') reason = 'editable-node';
+      else if (!pickerVisible(node)) reason = 'hidden';
+      const accepted = reason === 'mention';
       present = present || accepted;
       if (occurrences.length < 12) {
         occurrences.push({
@@ -170,18 +272,27 @@ function buildDeepResearchComposerTokenExpression(): string {
           attributes,
           textMatch,
           insideComposer,
-          insideEditable,
-          insideNonEditable,
-          chipDataId: chip ? pickerRedact(chip.getAttribute('data-id'), 80) : null,
+          insideEditor,
+          contentEditable: node.getAttribute?.('contenteditable') ?? null,
+          nearestEditableBoundary,
           accepted,
           reason,
         });
       }
     }
+    const bodyText = (node) => {
+      if (node !== editor && node.getAttribute?.('contenteditable') === 'false') return '';
+      let text = '';
+      for (const child of node.childNodes || []) {
+        text += child.nodeType === 3 ? (child.textContent || '') : bodyText(child);
+      }
+      return text;
+    };
+    const bodyTextLength = editor ? pickerText(bodyText(editor)).length : 0;
     try {
-      composer?.editor?.focus?.({ preventScroll: true });
+      editor?.focus?.({ preventScroll: true });
     } catch {}
-    return { composerFound: Boolean(composer), present, occurrences };
+    return { composerFound: Boolean(composer), present, bodyTextLength, occurrences };
   })()`;
 }
 async function clickTrustedPoint(

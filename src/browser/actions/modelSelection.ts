@@ -8,12 +8,21 @@ import {
 } from "../constants.js";
 import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
-import { buildComposerPickerHelpers, type ComposerPickerFailure } from "./composerPicker.js";
+import {
+  clickPoint,
+  closePicker,
+  openPicker,
+  pickerFailure,
+  waitForPickerState,
+  withOpenPicker,
+  type ComposerPickerFailure,
+  type PickerModelRow,
+} from "./composerPicker.js";
 import { delay } from "../utils.js";
 
 /**
- * Model labels the current composer picker lists verbatim in its model submenu.
- * Pre-submit verification reads the checked submenu row for these labels.
+ * Model titles the current composer picker lists verbatim in its model rows.
+ * Pre-submit verification reads the checked row for these labels.
  */
 export const MODEL_SUBMENU_LABELS = ["GPT-6", "GPT-5.6 Sol"] as const;
 /** Labels selected only through the exact submenu path; older picker layouts never offered them. */
@@ -23,17 +32,15 @@ export function isModelSubmenuLabel(label: string | null | undefined): boolean {
   return (MODEL_SUBMENU_LABELS as readonly string[]).includes(label ?? "");
 }
 
-type SubmenuModelOutcome =
+export type ModelSubmenuRead =
   | {
-      status: "already-selected" | "switched" | "read";
+      ok: true;
       targetChecked: boolean;
       /** Observed titles of the checked rows. */
       checkedLabels: string[];
+      /** Picker view the rows were read in ("simple" rows are covered but readable). */
+      view: string | null;
     }
-  | ComposerPickerFailure;
-
-export type ModelSubmenuRead =
-  | { ok: true; targetChecked: boolean; checkedLabels: string[] }
   | { ok: false; failure: ComposerPickerFailure };
 
 const LEGACY_PRO_VERSION_WORD_TOKENS = ["5 4", "5 2", "5 1", "5 0", "gpt 5 pro"] as const;
@@ -62,10 +69,10 @@ export async function ensureModelSelection(
   desiredModel: string,
   logger: BrowserLogger,
   strategy: BrowserModelStrategy = "select",
-  options: { buttonWaitMs?: number; buttonPollMs?: number } = {},
+  options: { buttonWaitMs?: number; buttonPollMs?: number; input?: ChromeClient["Input"] } = {},
 ): Promise<BrowserModelSelectionEvidence> {
   if (strategy === "select" && SUBMENU_ONLY_MODEL_LABELS.has(desiredModel)) {
-    return ensureSubmenuModelSelection(Runtime, desiredModel, logger);
+    return ensureSubmenuModelSelection(Runtime, options.input, desiredModel, logger);
   }
   const buttonWaitMs = options.buttonWaitMs ?? MODEL_BUTTON_WAIT_MS;
   const buttonPollMs = options.buttonPollMs ?? MODEL_BUTTON_POLL_MS;
@@ -134,132 +141,161 @@ export async function ensureModelSelection(
 }
 
 /**
- * Selects an exact model label from the current picker's model submenu. The checked row must
- * carry the exact label after selection; otherwise this throws before any prompt is sent.
+ * Selects an exact model title in the composer picker. The model list lives in the picker's
+ * advanced view: switch to it, click the row, then reopen and require that row to be the only
+ * checked one. Throws before any prompt is sent when that cannot be shown.
  */
 async function ensureSubmenuModelSelection(
   Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"] | undefined,
   desiredModel: string,
   logger: BrowserLogger,
 ): Promise<BrowserModelSelectionEvidence> {
-  const result = await evaluateSubmenuModel(Runtime, desiredModel, "select");
-  if (result.status === "failed" || !result.targetChecked) {
+  if (!Input) {
+    throw new Error("Model picker: CDP Input is required to select an exact model title.");
+  }
+  const result = await selectExactModel(Runtime, Input, desiredModel, logger);
+  if ("status" in result && result.status === "failed") {
     await logDomFailure(Runtime, logger, "model-submenu");
-    const reason = result.status === "failed" ? result.reason : "selection-unverified";
-    const diagnostic =
-      result.status === "failed" ? result.diagnostic : { checkedLabels: result.checkedLabels };
-    logger(`[browser] Model submenu diagnostic: ${JSON.stringify({ reason, diagnostic })}`);
+    logger(
+      `[browser] Model submenu diagnostic: ${JSON.stringify({ reason: result.reason, diagnostic: result.diagnostic })}`,
+    );
     throw new Error(
-      `Model picker: ${reason.replaceAll("-", " ")} for exact model label "${desiredModel}"; refusing to fall back to another model.`,
+      `Model picker: ${result.reason.replaceAll("-", " ")} for exact model label "${desiredModel}"; refusing to fall back to another model.`,
     );
   }
+  const selection = result as ExactModelSelection;
   // Evidence records the title observed on the single checked row, never the requested label.
-  const observedLabel = result.checkedLabels[0];
-  assertResolvedModelSelection(desiredModel, observedLabel);
+  assertResolvedModelSelection(desiredModel, selection.observedTitle);
   logger(
-    `Model picker: ${observedLabel}${result.status === "already-selected" ? " (already selected)" : ""}`,
+    `Model picker: ${selection.observedTitle}${selection.status === "already-selected" ? " (already selected)" : ""}`,
   );
   return {
     requestedModel: desiredModel,
-    resolvedLabel: observedLabel,
+    resolvedLabel: selection.observedTitle,
     strategy: "select",
-    status: result.status === "read" ? "already-selected" : result.status,
+    status: selection.status,
     verified: true,
     source: "chatgpt-model-picker",
     capturedAt: new Date().toISOString(),
   };
 }
 
-/** Reads which model submenu row is checked, without changing it, and closes the picker. */
+interface ExactModelSelection {
+  status: "already-selected" | "switched";
+  observedTitle: string;
+}
+
+type RowCheck =
+  | { ok: true; target: PickerModelRow; checked: PickerModelRow[]; targetChecked: boolean }
+  | { ok: false; failure: ComposerPickerFailure };
+
+/** Every row needs a title; exactly one row may carry the target title. */
+function checkModelRows(rows: PickerModelRow[], label: string): RowCheck {
+  const titles = rows.map((row) => row.title ?? "(untitled)");
+  const matches = rows.filter((row) => row.title === label);
+  if (rows.length === 0 || rows.some((row) => !row.title) || matches.length === 0) {
+    return { ok: false, failure: pickerFailure("option-not-found", { titles }) };
+  }
+  if (matches.length !== 1) {
+    return { ok: false, failure: pickerFailure("option-ambiguous", { titles }) };
+  }
+  const checked = rows.filter((row) => row.checked);
+  return {
+    ok: true,
+    target: matches[0],
+    checked,
+    targetChecked: checked.length === 1 && checked[0] === matches[0],
+  };
+}
+
+async function selectExactModel(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  label: string,
+  logger: BrowserLogger,
+): Promise<ExactModelSelection | ComposerPickerFailure> {
+  const opened = await openPicker(Runtime, Input);
+  if ("status" in opened) return opened;
+  const initial = checkModelRows(opened.rows, label);
+  if (!initial.ok) {
+    await closePicker(Runtime, Input);
+    return initial.failure;
+  }
+  if (initial.targetChecked) {
+    if (!(await closePicker(Runtime, Input))) return pickerFailure("menu-not-closed");
+    return { status: "already-selected", observedTitle: initial.target.title as string };
+  }
+  // Model rows are covered in the simple view; the view toggle exposes them.
+  let state = opened;
+  if (state.view !== "advanced") {
+    if (!state.viewToggle?.hit) {
+      await closePicker(Runtime, Input);
+      return pickerFailure("view-not-advanced", { view: state.view, ...state.diagnostic });
+    }
+    await clickPoint(Input, state.viewToggle);
+    state = await waitForPickerState(Runtime, (next) => next.menuBound && next.view === "advanced");
+    if (!state.menuBound || state.view !== "advanced") {
+      await closePicker(Runtime, Input);
+      return pickerFailure("view-not-advanced", { view: state.view, ...state.diagnostic });
+    }
+  }
+  const advanced = checkModelRows(state.rows, label);
+  if (!advanced.ok) {
+    await closePicker(Runtime, Input);
+    return advanced.failure;
+  }
+  if (!advanced.target.hit) {
+    await closePicker(Runtime, Input);
+    return pickerFailure("option-not-clickable", { view: state.view, ...state.diagnostic });
+  }
+  await clickPoint(Input, advanced.target);
+  // Observed: the menu stays open and returns to the simple view; a closing menu is handled too.
+  const after = await waitForPickerState(
+    Runtime,
+    (next) => !next.menuBound || next.view !== "advanced",
+  );
+  logger(
+    `[browser] Model submenu diagnostic: ${JSON.stringify({
+      afterClick: { menuOpen: after.menuBound, view: after.view },
+    })}`,
+  );
+  if (!(await closePicker(Runtime, Input))) return pickerFailure("menu-not-closed");
+  const reread = await readModelSubmenuSelection(Runtime, Input, label);
+  if (!reread.ok) {
+    return pickerFailure("selection-unverified", {
+      cause: reread.failure.reason,
+      detail: reread.failure.diagnostic,
+    });
+  }
+  if (!reread.targetChecked) {
+    return pickerFailure("selection-unverified", { checkedLabels: reread.checkedLabels });
+  }
+  return { status: "switched", observedTitle: reread.checkedLabels[0] };
+}
+
+/**
+ * Reads which model row is checked, without changing it, and closes the picker. Rows are read
+ * in whatever view the picker opens in (normally simple, where they are covered but their
+ * aria-checked is the same element's state); `view` records which one.
+ */
 export async function readModelSubmenuSelection(
   Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
   label: string,
 ): Promise<ModelSubmenuRead> {
-  const result = await evaluateSubmenuModel(Runtime, label, "read");
-  if (result.status === "failed") {
-    return { ok: false, failure: result };
-  }
-  return { ok: true, targetChecked: result.targetChecked, checkedLabels: result.checkedLabels };
-}
-
-async function evaluateSubmenuModel(
-  Runtime: ChromeClient["Runtime"],
-  label: string,
-  mode: "select" | "read",
-): Promise<SubmenuModelOutcome> {
-  const outcome = await Runtime.evaluate({
-    expression: buildSubmenuModelExpression(label, mode),
-    awaitPromise: true,
-    returnByValue: true,
+  let view: string | null = null;
+  const result = await withOpenPicker(Runtime, Input, async (state) => {
+    view = state.view;
+    const check = checkModelRows(state.rows, label);
+    if (!check.ok) return check.failure;
+    return {
+      targetChecked: check.targetChecked,
+      checkedLabels: check.checked.map((row) => row.title as string),
+    };
   });
-  return (
-    (outcome.result?.value as SubmenuModelOutcome | undefined) ?? {
-      status: "failed",
-      reason: "menu-not-bound",
-      diagnostic: { emptyResult: true },
-    }
-  );
-}
-
-function buildSubmenuModelExpression(label: string, mode: "select" | "read"): string {
-  return `(async () => {
-    ${buildComposerPickerHelpers()}
-    const TARGET = ${JSON.stringify(label)};
-    const MODE = ${JSON.stringify(mode)};
-    const currentTrigger = () => {
-      const composer = pickerComposerForm();
-      return composer ? pickerTrigger(composer.form) : null;
-    };
-    // Reads the checked rows by their observed titles. The target row must be the only row
-    // titled exactly TARGET and every row must expose a title.
-    const readSelection = async () => {
-      const found = await pickerOpenModelSubmenu(TARGET);
-      if (found.failure) return { failure: found.failure };
-      const titles = found.items.map((item) => item.title ?? '(untitled)');
-      if (found.matches.length !== 1 || found.items.some((item) => !item.title)) {
-        await pickerCloseAll(found.trigger);
-        return {
-          failure: pickerFailure(found.matches.length !== 1 ? 'option-ambiguous' : 'option-not-found', {
-            titles: titles.map((title) => pickerRedact(title, 60)),
-          }),
-        };
-      }
-      const checked = found.items.filter((item) => item.checked);
-      return {
-        found,
-        checkedLabels: checked.map((item) => item.title),
-        targetChecked: checked.length === 1 && checked[0] === found.matches[0],
-      };
-    };
-    // An open picker can swallow the later send click, so a read only counts once it is closed.
-    const closeOrFail = async (trigger, result) =>
-      (await pickerCloseAll(trigger))
-        ? result
-        : pickerFailure('menu-not-closed', { trigger: pickerDescribe(trigger) });
-    const current = await readSelection();
-    if (current.failure) return current.failure;
-    if (MODE === 'read' || current.targetChecked) {
-      return closeOrFail(current.found.trigger, {
-        status: MODE === 'read' ? 'read' : 'already-selected',
-        targetChecked: current.targetChecked,
-        checkedLabels: current.checkedLabels,
-      });
-    }
-    pickerClick(current.found.matches[0].node);
-    await pickerSleep(300);
-    if (!(await pickerCloseAll(currentTrigger()))) {
-      return pickerFailure('menu-not-closed', { trigger: pickerDescribe(currentTrigger()) });
-    }
-    const after = await readSelection();
-    if (after.failure) {
-      return pickerFailure('selection-unverified', { cause: after.failure.reason, detail: after.failure.diagnostic });
-    }
-    return closeOrFail(after.found.trigger, {
-      status: 'switched',
-      targetChecked: after.targetChecked,
-      checkedLabels: after.checkedLabels,
-    });
-  })()`;
+  if ("status" in result) return { ok: false, failure: result };
+  return { ok: true, ...result, view };
 }
 function assertResolvedModelSelection(desiredModel: string, resolvedLabel: string): void {
   if (SUBMENU_ONLY_MODEL_LABELS.has(desiredModel)) {

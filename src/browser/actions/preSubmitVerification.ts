@@ -68,6 +68,7 @@ export function resolvePreSubmitPlan(
  */
 export async function verifyComposerBeforeSubmit(
   Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
   plan: PreSubmitPlan,
   submission: { attachmentCount: number },
   logger: BrowserLogger,
@@ -78,7 +79,12 @@ export async function verifyComposerBeforeSubmit(
   let resolvedModelLabel: string | null = null;
   let modelChecked = false;
   if (plan.modelLabel) {
-    const model = await readModelSubmenuSelection(Runtime, plan.modelLabel);
+    const model = await readModelSubmenuSelection(Runtime, Input, plan.modelLabel);
+    if (model.ok) {
+      logger(
+        `[browser] Pre-submit model read: ${JSON.stringify({ view: model.view, checked: model.checkedLabels })}`,
+      );
+    }
     if (!model.ok) {
       mismatches.push(`model: could not read the model submenu (${model.failure.reason})`);
       diagnostics.model = model.failure;
@@ -97,7 +103,7 @@ export async function verifyComposerBeforeSubmit(
   let effortRangeMin: number | null = null;
   let effortRangeMax: number | null = null;
   if (plan.requestedEffort) {
-    const effort = await readEffortSlider(Runtime);
+    const effort = await readEffortSlider(Runtime, Input);
     if (!effort.ok) {
       mismatches.push(`effort: could not read the slider (${effort.failure.reason})`);
       diagnostics.effort = effort.failure;
@@ -128,10 +134,12 @@ export async function verifyComposerBeforeSubmit(
       `[browser] Pre-submit Deep Research token diagnostic: ${JSON.stringify(token.occurrences)}`,
     );
     if (!token.present) {
-      mismatches.push(
-        "deep research: no connector chip with the Deep Research token in the composer",
-      );
+      mismatches.push("deep research: no Deep Research mention in the composer");
       diagnostics.deepResearch = token;
+    }
+    // The prompt is typed after the mention; it must still be there next to it.
+    if (token.present && token.bodyTextLength === 0) {
+      mismatches.push("composer: no prompt text next to the Deep Research mention");
     }
   }
 
@@ -191,19 +199,25 @@ export interface PreSubmitGate {
   /**
    * Runs a selection owner (after its own retries). When it finally fails before any send
    * decision, the error is rethrown carrying `details.preSubmitVerification` with
-   * verified=false. Transport failures and anything after a "send" decision pass through.
+   * verified=false. Transport failures and anything after a send input pass through.
    */
   guardSelection: <T>(
     stage: PreSendSelectionStage,
     attachmentCount: number,
     action: () => Promise<T>,
   ) => Promise<T>;
+  /**
+   * Called immediately before the first send input (click or Enter) is dispatched. From then on
+   * no check can claim that nothing was sent or replace the session evidence.
+   */
+  markSendInput: () => void;
   readonly evidence: BrowserPreSubmitVerification | undefined;
   readonly stopped: boolean;
 }
 
 export function createPreSubmitGate(
   Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
   plan: PreSubmitPlan,
   logger: BrowserLogger,
   options: {
@@ -217,35 +231,33 @@ export function createPreSubmitGate(
 ): PreSubmitGate {
   let evidence: BrowserPreSubmitVerification | undefined;
   let stopped = false;
-  let sendDecided = false;
+  let sendInputSent = false;
   return {
-    beforeSend: (submission) => {
-      // Fixed per submission: a retry or follow-up after an earlier attempt reached the send
-      // step must not claim that nothing was sent or replace the run's first evidence.
-      if (sendDecided) {
-        return async () => {
-          await verifyLaterSubmission(Runtime, plan, submission, logger);
-          return "send";
-        };
-      }
-      return async () => {
-        const firstEvidence = await verifyComposerBeforeSubmit(Runtime, plan, submission, logger);
-        evidence = firstEvidence;
-        options.onVerified?.(firstEvidence);
-        if (plan.stopBeforeSubmit) {
-          stopped = true;
-          return "stop";
-        }
-        sendDecided = true;
+    beforeSend: (submission) => async () => {
+      // Decided per call: once any send input went out, a failing check (follow-up prompt or a
+      // retry) blocks this send without claiming nothing was sent or touching the evidence.
+      if (sendInputSent) {
+        await verifyLaterSubmission(Runtime, Input, plan, submission, logger);
         return "send";
-      };
+      }
+      const passing = await verifyComposerBeforeSubmit(Runtime, Input, plan, submission, logger);
+      evidence = passing;
+      options.onVerified?.(passing);
+      if (plan.stopBeforeSubmit) {
+        stopped = true;
+        return "stop";
+      }
+      return "send";
+    },
+    markSendInput: () => {
+      sendInputSent = true;
     },
     guardSelection: async (stage, attachmentCount, action) => {
       try {
         return await action();
       } catch (error) {
         if (
-          sendDecided ||
+          sendInputSent ||
           options.isTransportFailure?.(error) ||
           readPreSubmitEvidence(error) !== undefined
         ) {
@@ -278,23 +290,24 @@ export function createPreSubmitGate(
 }
 
 /**
- * Final check for a submission made after an earlier attempt in the same run reached the send
- * step (follow-up prompt or post-send retry). A mismatch still blocks this send, but the error
+ * Final check for a submission made after send input already went out in this run (follow-up
+ * prompt or post-send retry). A mismatch still blocks this send, but the error
  * neither claims that nothing was sent nor carries session-level pre-submit evidence.
  */
 async function verifyLaterSubmission(
   Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
   plan: PreSubmitPlan,
   submission: { attachmentCount: number },
   logger: BrowserLogger,
 ): Promise<void> {
   try {
-    await verifyComposerBeforeSubmit(Runtime, plan, submission, logger);
+    await verifyComposerBeforeSubmit(Runtime, Input, plan, submission, logger);
   } catch (error) {
     const laterEvidence = readPreSubmitEvidence(error);
     if (!laterEvidence) throw error;
     throw new BrowserAutomationError(
-      `Pre-submit verification failed for a later submission; this prompt was not sent, but an earlier prompt in this run had already reached the send step. ${laterEvidence.mismatches.join("; ")}`,
+      `Pre-submit verification failed for a later submission; this prompt was not sent, but send input for an earlier prompt in this run had already gone out. ${laterEvidence.mismatches.join("; ")}`,
       {
         stage: "later-submission-verification",
         code: "later-submission-mismatch",
@@ -361,6 +374,7 @@ function buildSelectionFailureEvidence(
  */
 export async function clearComposerAfterStop(
   Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
   logger: BrowserLogger,
   submission: { attachmentCount: number },
 ): Promise<BrowserRunWarning[]> {
@@ -381,12 +395,40 @@ export async function clearComposerAfterStop(
     );
   }
   await attempt("stop-cleanup-deep-research", async () => {
+    // The mention is an atomic node in the editor; the observed way to remove it is select-all
+    // and Backspace in the focused editor (the token read leaves focus there). Never Enter.
+    if ((await readDeepResearchComposerToken(Runtime)).present) {
+      await pressEditorKey(Input, SELECT_ALL_KEY);
+      await pressEditorKey(Input, BACKSPACE_KEY);
+    }
     const token = await readDeepResearchComposerToken(Runtime);
     if (token.present) {
       throw new Error(
-        `Deep Research connector chip is still in the composer (${JSON.stringify(token.occurrences.filter((entry) => entry.accepted))}).`,
+        `Deep Research mention is still in the composer (${JSON.stringify(token.occurrences.filter((entry) => entry.accepted))}).`,
       );
     }
   });
   return warnings;
+}
+
+const SELECT_ALL_KEY = {
+  key: "a",
+  code: "KeyA",
+  windowsVirtualKeyCode: 65,
+  nativeVirtualKeyCode: 65,
+  modifiers: 2,
+} as const;
+const BACKSPACE_KEY = {
+  key: "Backspace",
+  code: "Backspace",
+  windowsVirtualKeyCode: 8,
+  nativeVirtualKeyCode: 8,
+} as const;
+
+async function pressEditorKey(
+  Input: ChromeClient["Input"],
+  key: typeof SELECT_ALL_KEY | typeof BACKSPACE_KEY,
+): Promise<void> {
+  await Input.dispatchKeyEvent({ type: "rawKeyDown", ...key });
+  await Input.dispatchKeyEvent({ type: "keyUp", ...key });
 }

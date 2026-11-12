@@ -170,6 +170,39 @@ describe("ensurePromptReady", () => {
     } as unknown as ChromeClient["Runtime"];
     await expect(ensurePromptReady(runtime, 0, logger)).rejects.toThrow(/textarea did not appear/i);
   });
+
+  test("waits while the placeholder textarea is shown and resolves once the editor replaces it", async () => {
+    // Observed load: textarea#pending-home-input first, then the ProseMirror editor.
+    let pendingVisible = true;
+    const visibleRect = { width: 100, height: 20 };
+    const editor = { hasAttribute: () => false };
+    const document = {
+      getElementById: (id: string) =>
+        id === "pending-home-input" && pendingVisible
+          ? { getBoundingClientRect: () => visibleRect, hasAttribute: () => false }
+          : null,
+      querySelector: (selector: string) =>
+        selector.includes("textarea")
+          ? pendingVisible
+            ? { hasAttribute: () => false }
+            : null
+          : pendingVisible
+            ? null
+            : editor,
+    };
+    const results: boolean[] = [];
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+        const value = new Script(expression).runInContext(createContext({ document })) as boolean;
+        results.push(value);
+        if (results.length === 2) pendingVisible = false;
+        return { result: { value } };
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(ensurePromptReady(runtime, 5_000, logger)).resolves.toBeUndefined();
+    expect(results).toEqual([false, false, true]);
+  });
 });
 
 describe("ensureChatMode", () => {

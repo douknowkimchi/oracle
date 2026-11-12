@@ -771,6 +771,13 @@ async function waitForPrompt(
   while (Date.now() < deadline) {
     const { result } = await Runtime.evaluate({
       expression: `(() => {
+        // ChatGPT first renders a placeholder textarea#pending-home-input and swaps in the real
+        // editor a few seconds later; the placeholder must not count as a ready prompt.
+        const pending = document.getElementById("pending-home-input");
+        const pendingRect = pending?.getBoundingClientRect?.();
+        if (pendingRect && pendingRect.width > 0 && pendingRect.height > 0) {
+          return false;
+        }
         const selectors = ${JSON.stringify(INPUT_SELECTORS)};
         for (const selector of selectors) {
           const node = document.querySelector(selector);

@@ -15,7 +15,7 @@ import {
 import { FakePickerDom, type FakePickerOptions } from "./fakeComposerPicker.js";
 
 function setup(options: FakePickerOptions = {}) {
-  const dom = new FakePickerDom(options);
+  const dom = new FakePickerDom({ checkedModel: "GPT-6", ...options });
   const { Runtime, Input } = dom.cdp();
   const logs: string[] = [];
   const logger = ((message: string) => logs.push(message)) as BrowserLogger;
@@ -88,10 +88,10 @@ describe("effort slider state checks", () => {
   });
 });
 
-describe("ensureThinkingTime on the current effort slider", () => {
-  it("presses ArrowRight on the slider row until Pro and re-reads it after reopening", async () => {
+describe("ensureThinkingTime on the observed Power row", () => {
+  it("opens the picker with a click, steps Medium to Pro one key at a time and re-reads after reopening", async () => {
     const { dom, Runtime, Input, logger, logs } = setup({
-      effort: { min: "0", max: "4", value: "2" },
+      effort: { min: "0", max: "4", value: "1" },
     });
 
     await expect(ensureThinkingTime(Runtime, Input, "pro", logger)).resolves.toEqual({
@@ -101,7 +101,8 @@ describe("ensureThinkingTime on the current effort slider", () => {
       status: "switched",
     });
 
-    expect(dom.sentKeys).toEqual(["ArrowRight", "ArrowRight"]);
+    expect(dom.sentKeys).toEqual(["ArrowRight", "ArrowRight", "ArrowRight", "Escape", "Escape"]);
+    expect(dom.clicks).toEqual(["Select ChatGPT model", "Select ChatGPT model"]);
     expect(dom.sliderValue).toBe(4);
     expect(dom.menuOpen).toBe(false);
     expect(logs.join("\n")).toContain("[browser] Thinking time: Pro [slider 4/4]");
@@ -112,30 +113,37 @@ describe("ensureThinkingTime on the current effort slider", () => {
 
     await ensureThinkingTime(Runtime, Input, "instant", logger);
 
-    expect(dom.sentKeys).toEqual(["ArrowLeft", "ArrowLeft", "ArrowLeft", "ArrowLeft"]);
+    expect(dom.sentKeys.filter((key) => key === "ArrowLeft")).toHaveLength(4);
     expect(dom.sliderValue).toBe(0);
   });
 
-  it("sends no keys when the requested level is already selected", async () => {
+  it("sends no arrow keys when the requested level is already selected", async () => {
     const { dom, Runtime, Input, logger } = setup({ effort: { min: "0", max: "4", value: "3" } });
 
     await expect(ensureThinkingTime(Runtime, Input, "extra-high", logger)).resolves.toMatchObject({
       status: "already-selected",
       index: 3,
     });
-    expect(dom.sentKeys).toEqual([]);
+    expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual([]);
   });
 
-  it("closes an open model submenu before reading the locked slider", async () => {
+  it("closes a picker left in the model view and reads the slider in the simple view", async () => {
     const { dom, Runtime, Input, logger } = setup({ effort: { min: "0", max: "4", value: "2" } });
     dom.toggleMenu();
-    dom.openSubmenu();
-    expect(dom.slider?.getAttribute("aria-disabled")).toBe("true");
+    dom.showAdvanced();
+    expect(dom.powerRow?.getAttribute("aria-disabled")).toBe("true");
 
     await ensureThinkingTime(Runtime, Input, "high", logger);
 
-    expect(dom.submenuOpen).toBe(false);
-    expect(dom.sentKeys).toEqual([]);
+    expect(dom.view).toBe("simple");
+    expect(dom.menuOpen).toBe(false);
+  });
+
+  it("fails when the picker only opens in the model view", async () => {
+    const { dom, Runtime, Input, logger } = setup({ reopenInAdvanced: true });
+
+    await expectEffortFailure(ensureThinkingTime(Runtime, Input, "pro", logger), "effort-disabled");
+    expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual([]);
   });
 
   it("fails before any key press when the slider range is not 0..4", async () => {
@@ -147,27 +155,35 @@ describe("ensureThinkingTime on the current effort slider", () => {
     );
 
     expect(error.message).toMatch(/range 0\.\.3/);
-    expect(dom.sentKeys).toEqual([]);
+    expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual([]);
   });
 
-  it("fails when the slider stays disabled", async () => {
+  it("fails when the slider is locked", async () => {
     const { dom, Runtime, Input, logger } = setup({ sliderAlwaysDisabled: true });
 
     await expectEffortFailure(ensureThinkingTime(Runtime, Input, "pro", logger), "effort-disabled");
-    expect(dom.sentKeys).toEqual([]);
+    expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual([]);
+  });
+
+  it("fails when the composer has no model trigger", async () => {
+    const { Runtime, Input, logger } = setup({ triggerMissing: true });
+
+    await expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "pro", logger),
+      "effort-trigger-not-found",
+    );
   });
 
   it("fails when the menu is not bound to the trigger", async () => {
-    const { Runtime, Input, logger, logs } = setup({ unboundMenu: true });
+    const { Runtime, Input, logger } = setup({ unboundMenu: true });
 
     await expectEffortFailure(
       ensureThinkingTime(Runtime, Input, "pro", logger),
       "effort-menu-not-bound",
     );
-    expect(logs.join("\n")).toContain("missing-menu");
   });
 
-  it("fails when the picker has no effort slider", async () => {
+  it("fails when the picker has no effort row", async () => {
     const { Runtime, Input, logger } = setup({ effort: null });
 
     await expectEffortFailure(
@@ -186,7 +202,7 @@ describe("ensureThinkingTime on the current effort slider", () => {
     );
     await vi.runAllTimersAsync();
     await assertion;
-    expect(dom.sentKeys).toEqual(["ArrowRight"]);
+    expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual(["ArrowRight"]);
   });
 
   it("fails when a key press overshoots the requested level", async () => {
@@ -203,58 +219,42 @@ describe("ensureThinkingTime on the current effort slider", () => {
 });
 
 describe("readEffortSlider", () => {
-  it("does not read a menu whose owner already reports it closed", async () => {
-    // Escape animation: the old menu stays rendered while the trigger already says closed.
-    const { dom, Runtime } = setup({ effort: { min: "0", max: "4", value: "1" } });
-    dom.menuOpen = true;
-    dom.trigger.setAttribute("aria-controls", "radix-menu");
-    dom.trigger.setAttribute("aria-expanded", "false");
-    dom.trigger.setAttribute("data-state", "closed");
-    let clicks = 0;
-    dom.trigger.addEventListener("pointerdown", () => {
-      clicks += 1;
-    });
-
-    const read = await readEffortSlider(Runtime);
-
-    // The stale layer was rejected, so the picker had to be opened by a fresh click.
-    expect(clicks).toBe(1);
-    expect(read).toMatchObject({ ok: true, state: { value: 1 } });
-  });
-
-  it("rejects a bound menu that is marked closing", async () => {
-    const { dom, Runtime } = setup({ effort: { min: "0", max: "4", value: "1" } });
-    dom.menu.setAttribute("data-state", "closed");
-
-    await expect(readEffortSlider(Runtime)).resolves.toMatchObject({
-      ok: false,
-      failure: { reason: "menu-not-bound" },
-    });
-  });
-
   it("reports the observed range and value and leaves the picker closed", async () => {
-    const { dom, Runtime } = setup({ effort: { min: "0", max: "4", value: "4" } });
+    const { dom, Runtime, Input } = setup({ effort: { min: "0", max: "4", value: "4" } });
 
-    await expect(readEffortSlider(Runtime)).resolves.toEqual({
+    await expect(readEffortSlider(Runtime, Input)).resolves.toEqual({
       ok: true,
       state: { min: 0, max: 4, value: 4, valueText: null, disabled: false },
     });
     expect(dom.menuOpen).toBe(false);
   });
 
-  it("fails when the picker stays open after the read", async () => {
-    const { Runtime } = setup({ escapeIgnored: true });
+  it("does not read a menu whose trigger already reports it closed", async () => {
+    // Escape animation: the old menu stays rendered while the trigger already says closed.
+    const { dom, Runtime, Input } = setup({ effort: { min: "0", max: "4", value: "1" } });
+    dom.menuOpen = true;
+    dom.menu.setAttribute("data-state", "open");
 
-    await expect(readEffortSlider(Runtime)).resolves.toMatchObject({
+    const read = await readEffortSlider(Runtime, Input);
+
+    expect(dom.clicks).toEqual(["Select ChatGPT model"]);
+    expect(read).toMatchObject({ ok: true, state: { value: 1 } });
+  });
+
+  it("fails when the picker stays open after the read", async () => {
+    const { Runtime, Input } = setup({ escapeIgnored: true });
+
+    await expect(readEffortSlider(Runtime, Input)).resolves.toMatchObject({
       ok: false,
       failure: { reason: "menu-not-closed" },
     });
   });
+
   it("returns the structural failure when no composer form is present", async () => {
-    const { dom, Runtime } = setup();
+    const { dom, Runtime, Input } = setup();
     dom.editor.attached = false;
 
-    await expect(readEffortSlider(Runtime)).resolves.toMatchObject({
+    await expect(readEffortSlider(Runtime, Input)).resolves.toMatchObject({
       ok: false,
       failure: { reason: "composer-not-found" },
     });

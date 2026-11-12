@@ -1,18 +1,26 @@
 /**
- * Minimal DOM for running the composer-picker page expressions in tests. It models the parts
- * of ChatGPT's current picker that the expressions depend on: a composer form, a trigger whose
- * aria-controls points at the open menu, a model submenu (which locks the effort slider while
- * open), an effort slider driven by arrow keys on its menu row, and Escape closing the picker.
+ * Minimal DOM that mirrors the composer observed on the product profile (CT125, 2026-11-13):
+ * - form > ProseMirror editor (contenteditable) > p, "Add files and more", the model trigger
+ *   `button[aria-label="Select ChatGPT model"][aria-haspopup="menu"]` and Send;
+ * - one radix menu (bound through aria-controls) with `[data-model-picker-view]` simple/advanced:
+ *   simple shows the view toggle and the Power row/slider while model rows stay covered;
+ *   advanced makes the rows clickable and puts toggle/Power under inert + aria-hidden;
+ * - a non-menu "Add files and more" list whose Deep Research item inserts an inline mention.
+ * CDP input is simulated: mouse clicks hit the element at the point, keys go to the focus.
  */
 
 type Attributes = Record<string, string>;
+type TextNode = { nodeType: 3; textContent: string };
+
+const TOKEN = "app://connector_openai_deep_research";
 
 export class FakeElement {
   readonly children: FakeElement[] = [];
   parent: FakeElement | null = null;
   attached = true;
-  private ownText = "";
-  readonly listeners = new Map<string, Array<(event: { type: string; key?: string }) => void>>();
+  readonly nodeType = 1;
+  ownText = "";
+  readonly serial: number;
 
   constructor(
     readonly dom: FakePickerDom,
@@ -21,6 +29,7 @@ export class FakeElement {
     text = "",
   ) {
     this.ownText = text;
+    this.serial = dom.nextSerial();
   }
 
   append(...nodes: FakeElement[]): this {
@@ -31,26 +40,22 @@ export class FakeElement {
     return this;
   }
 
-  /** Rendered text: block children (div, p) start their own line, inline spans join. */
-  get innerText(): string {
-    const parts = [this.ownText];
-    for (const child of this.children) {
-      parts.push(BLOCK_TAGS.has(child.tagName) ? `\n${child.innerText}\n` : child.innerText);
-    }
-    return parts.join("").replace(/\n+/g, "\n");
+  remove(): void {
+    if (!this.parent) return;
+    this.parent.children.splice(this.parent.children.indexOf(this), 1);
+    this.parent = null;
   }
 
   get textContent(): string {
     return this.ownText + this.children.map((child) => child.textContent).join("");
   }
 
-  set textContent(value: string) {
-    this.ownText = value;
-    this.children.length = 0;
+  get childNodes(): Array<FakeElement | TextNode> {
+    return [{ nodeType: 3, textContent: this.ownText }, ...this.children];
   }
 
   get isConnected(): boolean {
-    return this.attached && (this.parent ? this.parent.isConnected : true);
+    return this.attached && (this.parent ? this.parent.isConnected : this === this.dom.body);
   }
 
   get disabled(): boolean {
@@ -78,9 +83,12 @@ export class FakeElement {
     delete this.attrs[name];
   }
 
-  getBoundingClientRect(): { width: number; height: number } {
-    const visible = this.isConnected && this.dom.isRendered(this);
-    return visible ? { width: 100, height: 20 } : { width: 0, height: 0 };
+  /** Each rendered element gets its own 8x8 box so elementFromPoint can identify it. */
+  getBoundingClientRect(): { left: number; top: number; width: number; height: number } {
+    if (!this.isConnected || !this.dom.isRendered(this)) {
+      return { left: 0, top: 0, width: 0, height: 0 };
+    }
+    return { left: this.serial * 10, top: 100, width: 8, height: 8 };
   }
 
   descendants(): FakeElement[] {
@@ -116,21 +124,7 @@ export class FakeElement {
   focus(): void {
     if (this.dom.isFocusable(this)) this.dom.activeElement = this;
   }
-
-  addEventListener(type: string, listener: (event: { type: string }) => void): void {
-    const list = this.listeners.get(type) ?? [];
-    list.push(listener);
-    this.listeners.set(type, list);
-  }
-
-  dispatchEvent(event: { type: string; key?: string }): boolean {
-    this.dom.events.push({ type: event.type, target: this });
-    for (const listener of this.listeners.get(event.type) ?? []) listener(event);
-    return true;
-  }
 }
-
-const BLOCK_TAGS = new Set(["div", "p", "li"]);
 
 function matchesSelector(node: FakeElement, selector: string): boolean {
   return selector.split(",").some((part) => matchesCompound(node, part.trim()));
@@ -168,212 +162,235 @@ function matchesCompound(node: FakeElement, compound: string): boolean {
   return true;
 }
 
+export interface FakeModelRow {
+  label: string;
+  /** Title split into inline child spans inside the single title span. */
+  titleParts?: string[];
+  /** Extra span inside the row content block (a second "line"). */
+  descriptionSpan?: string;
+  /** Extra block outside the row content (text not covered by the title). */
+  descriptionOutside?: string;
+}
+
 export interface FakePickerOptions {
-  /** Row title (split into inline spans when titleParts is set) plus an optional description line. */
-  models?: Array<{ label: string; titleParts?: string[]; description?: string }>;
+  models?: FakeModelRow[];
   checkedModel?: string | null;
   effort?: { min: string; max: string; value: string } | null;
   /** Key presses move the slider by this many steps (0 simulates an ignored key). */
   keyStep?: number;
-  /** Trigger never exposes a bound menu (aria-controls points nowhere). */
+  /** Trigger opens but aria-controls names no element. */
   unboundMenu?: boolean;
-  /** Clicking the target model row does not change the checked row. */
+  /** Model trigger is absent from the composer. */
+  triggerMissing?: boolean;
+  /** Clicking a model row does not change the checked row. */
   modelClickIgnored?: boolean;
-  /** Slider stays disabled even when the model submenu is closed. */
+  /** Observed: the menu stays open in the simple view; "close" covers a closing menu. */
+  afterModelClick?: "simple" | "close";
+  /** The menu reopens in the advanced view (unobserved; exercises the effort reopen path). */
+  reopenInAdvanced?: boolean;
+  /** Effort row locked even in the simple view (data-locked="true"). */
   sliderAlwaysDisabled?: boolean;
-  /**
-   * pill: connector chip outside the editor; chip: non-editable connector chip inside the editor;
-   * prompt-link: only a link typed in the prompt; prompt-attribute: only an editable node carrying
-   * the URI in an attribute; chip-and-link: chip plus a prompt link.
-   */
-  deepResearchToken?:
-    | "pill"
-    | "chip"
-    | "prompt-link"
-    | "prompt-attribute"
-    | "chip-and-link"
-    | "none";
-  prompt?: string;
-  /** Escape leaves the trigger expanded (stuck menu). */
+  /** Escape leaves the menu open. */
   escapeIgnored?: boolean;
+  /** Prompt text already in the editor paragraph. */
+  prompt?: string;
+  /**
+   * Deep Research state already in the editor: mention (observed), prompt-link (typed link),
+   * editable-attribute (editable span with a mention attribute), arbitrary-attribute
+   * (non-editable span with data-token), chip-child-editable (editable child of a chip),
+   * mention-editable-child (editable child inside a mention carrying the attribute).
+   */
+  deepResearch?:
+    | "none"
+    | "mention"
+    | "mention-and-link"
+    | "prompt-link"
+    | "editable-attribute"
+    | "arbitrary-attribute"
+    | "chip-child-editable"
+    | "mention-editable-child";
+  /** "Add files and more" list offers Deep Research (default true). */
+  deepResearchOffered?: boolean;
 }
 
 export class FakePickerDom {
   activeElement: FakeElement | null = null;
-  readonly events: Array<{ type: string; target: FakeElement | "document" }> = [];
+  private serialCounter = 0;
   readonly body: FakeElement;
   readonly form: FakeElement;
   readonly editor: FakeElement;
+  readonly paragraph: FakeElement;
+  readonly addContext: FakeElement;
   readonly trigger: FakeElement;
-  readonly menu: FakeElement;
-  readonly subTrigger: FakeElement;
-  readonly submenu: FakeElement;
-  readonly modelItems: FakeElement[] = [];
-  readonly sliderRow: FakeElement | null = null;
-  readonly sliderContainer: FakeElement | null = null;
-  readonly slider: FakeElement | null = null;
   readonly sendButton: FakeElement;
+  readonly menu: FakeElement;
+  readonly viewNode: FakeElement;
+  readonly simpleArea: FakeElement;
+  readonly viewToggle: FakeElement;
+  readonly powerRow: FakeElement | null = null;
+  readonly slider: FakeElement | null = null;
+  readonly lockNode: FakeElement | null = null;
+  readonly modelRows: Array<{ row: FakeElement; label: string }> = [];
+  readonly list: FakeElement;
+  readonly listItem: FakeElement | null = null;
   menuOpen = false;
-  submenuOpen = false;
-  sentKeys: string[] = [];
-  readonly portal: FakeElement;
+  listOpen = false;
+  view: "simple" | "advanced" = "simple";
+  private selectAllArmed = false;
+  readonly sentKeys: string[] = [];
+  readonly clicks: string[] = [];
+  private readonly actions = new Map<FakeElement, () => void>();
 
   constructor(readonly options: FakePickerOptions = {}) {
     const el = (tag: string, attrs: Attributes = {}, text = "") =>
       new FakeElement(this, tag, attrs, text);
     this.body = el("body");
     this.form = el("form");
-    this.editor = el(
-      "div",
-      { id: "prompt-textarea", contenteditable: "true", class: "ProseMirror" },
-      options.prompt ?? "",
-    );
+    this.editor = el("div", {
+      class: "ProseMirror",
+      role: "textbox",
+      contenteditable: "true",
+      "aria-label": "Ask ChatGPT",
+    });
+    this.paragraph = el("p", {}, options.prompt ?? "");
+    this.editor.append(this.paragraph);
+    this.addContext = el("button", {
+      "aria-label": "Add files and more",
+      "data-composer-navigation-target": "add-context",
+      "data-state": "closed",
+      "aria-expanded": "false",
+    });
     this.trigger = el(
       "button",
       {
+        "aria-label": "Select ChatGPT model",
         "aria-haspopup": "menu",
-        "data-tone": "neutral",
-        "aria-expanded": "false",
+        "data-composer-navigation-target": "reasoning",
         "data-state": "closed",
+        "aria-expanded": "false",
       },
-      "GPT-6 Pro",
+      "Thinking effort Pro",
     );
-    this.sendButton = el("button", { "data-testid": "send-button" }, "Send");
-    this.form.append(this.editor, this.trigger, this.sendButton);
-    const token = "app://connector_openai_deep_research";
-    const chipAttrs = { "data-id": `plugin:${token}`, "data-keyword": "Deep research" };
-    const mode = options.deepResearchToken;
-    if (mode === "pill") {
-      this.form.append(el("span", chipAttrs, "Deep research"));
-    }
-    if (mode === "chip" || mode === "chip-and-link") {
-      this.editor.append(el("span", { ...chipAttrs, contenteditable: "false" }, "Deep research"));
-    }
-    if (mode === "prompt-link" || mode === "chip-and-link") {
-      this.editor.append(el("a", { href: token }, token));
-    }
-    if (mode === "prompt-attribute") {
-      this.editor.append(el("span", { "data-id": `plugin:${token}` }, "typed"));
-    }
-    this.portal = el("div");
-    this.menu = el("div", {
-      id: "radix-menu",
-      role: "menu",
-      "data-testid": "composer-intelligence-picker-content",
-    });
-    this.subTrigger = el(
+    this.sendButton = el("button", { "aria-label": "Send" });
+    this.form.append(this.editor, this.addContext);
+    if (!options.triggerMissing) this.form.append(this.trigger);
+    this.form.append(this.sendButton);
+
+    this.menu = el("div", { id: "radix-menu", role: "menu", "data-state": "closed" });
+    this.viewNode = el("div", { role: "group", "data-model-picker-view": "simple" });
+    this.simpleArea = el("div");
+    this.viewToggle = el(
       "div",
-      {
-        role: "menuitem",
-        "aria-haspopup": "menu",
-        "aria-expanded": "false",
-        "data-state": "closed",
-        "aria-controls": "radix-submenu",
-      },
-      options.checkedModel ?? "Model",
+      { role: "menuitem", "aria-label": "Select model", "data-model-picker-view-toggle": "true" },
+      "Select model",
     );
-    this.menu.append(this.subTrigger);
+    this.simpleArea.append(this.viewToggle);
     if (options.effort !== null) {
       const effort = options.effort ?? { min: "0", max: "4", value: "2" };
-      this.sliderRow = el("div", { role: "menuitem", tabindex: "-1" });
-      this.sliderContainer = el("div", { "data-model-reasoning-effort-slider": "" });
-      this.slider = el("input", {
+      this.powerRow = el("div", {
+        role: "menuitem",
+        "aria-label": "Power",
+        "data-reasoning-slider": "true",
+        tabindex: "0",
+      });
+      this.lockNode = el("span", {
+        "aria-disabled": options.sliderAlwaysDisabled ? "true" : "false",
+        "data-locked": options.sliderAlwaysDisabled ? "true" : "false",
+      });
+      const sliderWrap = el("div", { "data-model-picker-power-slider": "" });
+      this.slider = el("span", {
         role: "slider",
         "aria-valuemin": effort.min,
         "aria-valuemax": effort.max,
         "aria-valuenow": effort.value,
+        tabindex: "-1",
       });
-      this.sliderContainer.append(this.slider);
-      this.sliderRow.append(this.sliderContainer);
-      this.menu.append(this.sliderRow);
+      sliderWrap.append(this.slider);
+      this.lockNode.append(sliderWrap);
+      this.powerRow.append(this.lockNode);
+      this.simpleArea.append(this.powerRow);
     }
-    this.submenu = el("div", { id: "radix-submenu", role: "menu" });
+    this.viewNode.append(this.simpleArea);
     for (const model of options.models ?? [{ label: "GPT-6" }, { label: "GPT-5.6 Sol" }]) {
-      const item = el("div", {
-        role: "menuitemradio",
-        "aria-checked": model.label === options.checkedModel ? "true" : "false",
-      });
-      for (const part of model.titleParts ?? [model.label]) item.append(el("span", {}, part));
-      if (model.description) item.append(el("div", {}, model.description));
-      item.addEventListener("click", () => this.clickModel(item, model.label));
-      this.modelItems.push(item);
-      this.submenu.append(item);
+      const row = el("div", { role: "menuitemradio", "aria-checked": "false" });
+      const content = el("div", { "data-menu-row-content": "true" });
+      const title = el("span", {}, model.titleParts ? "" : model.label);
+      for (const part of model.titleParts ?? []) title.append(el("span", {}, part));
+      content.append(title);
+      if (model.descriptionSpan !== undefined)
+        content.append(el("span", {}, model.descriptionSpan));
+      row.append(content);
+      if (model.descriptionOutside !== undefined)
+        row.append(el("div", {}, model.descriptionOutside));
+      this.modelRows.push({ row, label: model.label });
+      this.viewNode.append(row);
+      this.actions.set(row, () => this.clickModel(row));
     }
-    this.portal.append(this.menu, this.submenu);
-    this.body.append(this.form, this.portal);
-    this.trigger.addEventListener("pointerdown", () => this.toggleMenu());
-    this.subTrigger.addEventListener("click", () => this.openSubmenu());
-    this.syncSliderLock();
+    this.menu.append(this.viewNode);
+    this.list = el("div", { class: "composer-list" });
+    if (options.deepResearchOffered !== false) {
+      this.listItem = el(
+        "button",
+        {
+          type: "button",
+          "data-list-navigation-item": "true",
+          "data-plugin-impression-id": "connector_openai_deep_research",
+        },
+        "Deep research",
+      );
+      this.list.append(this.listItem);
+      this.actions.set(this.listItem, () => this.insertMention());
+    }
+    this.body.append(this.form, this.menu, this.list);
+    this.actions.set(this.trigger, () => this.toggleMenu());
+    this.actions.set(this.viewToggle, () => this.showAdvanced());
+    this.actions.set(this.addContext, () => this.toggleList());
+    if (options.checkedModel) this.setChecked(options.checkedModel);
+    this.insertDeepResearchState(options.deepResearch ?? "none");
+  }
+
+  nextSerial(): number {
+    this.serialCounter += 1;
+    return this.serialCounter;
   }
 
   isRendered(node: FakeElement): boolean {
     if (this.menu.contains(node)) return this.menuOpen;
-    if (this.submenu.contains(node)) return this.submenuOpen;
-    if (node === this.portal) return true;
-    // The real slider input is visually hidden; only its container renders.
-    if (node === this.slider) return false;
+    if (this.list.contains(node)) return this.listOpen && node !== this.list;
+    if (node === this.list) return false;
     return true;
   }
 
   isFocusable(node: FakeElement): boolean {
-    return node === this.editor || node === this.trigger || node === this.sliderRow;
+    return node === this.editor || node === this.trigger || node === this.powerRow;
   }
 
-  toggleMenu(): void {
-    // Like Radix, the trigger's own open state decides whether a press opens or closes.
-    if (this.trigger.getAttribute("aria-expanded") === "true") {
-      this.closeAll();
-      return;
-    }
-    if (this.options.unboundMenu) {
-      this.trigger.setAttribute("aria-expanded", "true");
-      this.trigger.setAttribute("aria-controls", "missing-menu");
-      return;
-    }
-    this.menuOpen = true;
-    this.trigger.setAttribute("aria-expanded", "true");
-    this.trigger.setAttribute("data-state", "open");
-    this.trigger.setAttribute("aria-controls", "radix-menu");
-    this.syncSliderLock();
+  /** Topmost element at a point; model rows are covered by the Power row in the simple view. */
+  elementFromPoint(x: number, y: number): FakeElement | null {
+    const hit = [this.body, ...this.body.descendants()].find((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && x === rect.left + rect.width / 2 && y === rect.top + rect.height / 2;
+    });
+    if (!hit) return null;
+    const row = this.modelRows.find(({ row: candidate }) => candidate.contains(hit));
+    if (row && this.view === "simple") return this.powerRow ?? this.viewToggle;
+    return hit;
   }
 
-  openSubmenu(): void {
-    if (!this.menuOpen) return;
-    this.submenuOpen = true;
-    this.subTrigger.setAttribute("aria-expanded", "true");
-    this.subTrigger.setAttribute("data-state", "open");
-    this.syncSliderLock();
+  /** Changes the checked row directly (as if the user changed it between checks). */
+  setChecked(label: string): void {
+    for (const { row, label: rowLabel } of this.modelRows) {
+      const checked = rowLabel === label;
+      row.setAttribute("aria-checked", checked ? "true" : "false");
+      if (checked) row.setAttribute("data-model-selected", "true");
+      else row.removeAttribute("data-model-selected");
+    }
   }
 
-  closeAll(): void {
-    if (this.options.escapeIgnored) return;
-    this.menuOpen = false;
-    this.submenuOpen = false;
-    for (const node of [this.trigger, this.subTrigger]) {
-      node.setAttribute("aria-expanded", "false");
-      node.setAttribute("data-state", "closed");
-    }
-    this.trigger.removeAttribute("aria-controls");
-    if (this.activeElement && !this.form.contains(this.activeElement)) this.activeElement = null;
-    this.syncSliderLock();
-  }
-
-  clickModel(item: FakeElement, label: string): void {
-    if (!this.options.modelClickIgnored) {
-      for (const other of this.modelItems) other.setAttribute("aria-checked", "false");
-      item.setAttribute("aria-checked", "true");
-      this.subTrigger.textContent = label;
-    }
-    this.closeAll();
-  }
-
-  syncSliderLock(): void {
-    if (!this.slider) return;
-    if (this.submenuOpen || this.options.sliderAlwaysDisabled) {
-      this.slider.setAttribute("aria-disabled", "true");
-    } else {
-      this.slider.removeAttribute("aria-disabled");
-    }
+  checkedModels(): string[] {
+    return this.modelRows
+      .filter(({ row }) => row.getAttribute("aria-checked") === "true")
+      .map(({ label }) => label);
   }
 
   get sliderValue(): number | null {
@@ -381,23 +398,163 @@ export class FakePickerDom {
     return raw === null || raw === undefined ? null : Number(raw);
   }
 
-  checkedModels(): string[] {
-    return this.modelItems
-      .filter((item) => item.getAttribute("aria-checked") === "true")
-      .map((item) => item.innerText.split("\n")[0] ?? "");
+  toggleMenu(): void {
+    if (this.trigger.getAttribute("aria-expanded") === "true") {
+      this.closeMenu();
+      return;
+    }
+    this.trigger.setAttribute("aria-expanded", "true");
+    this.trigger.setAttribute("data-state", "open");
+    if (this.options.unboundMenu) {
+      this.trigger.setAttribute("aria-controls", "missing-menu");
+      return;
+    }
+    this.trigger.setAttribute("aria-controls", "radix-menu");
+    this.menuOpen = true;
+    this.menu.setAttribute("data-state", "open");
+    this.setView(this.options.reopenInAdvanced ? "advanced" : "simple");
   }
 
-  /** CDP Input.dispatchKeyEvent stand-in: arrow keys move the slider when its row has focus. */
-  pressKey(key: string): void {
-    this.sentKeys.push(key);
-    if (!this.slider || this.activeElement !== this.sliderRow || !this.menuOpen) return;
-    if (this.slider.getAttribute("aria-disabled") === "true") return;
+  showAdvanced(): void {
+    if (this.view === "simple") this.setView("advanced");
+  }
+
+  private setView(view: "simple" | "advanced"): void {
+    this.view = view;
+    this.viewNode.setAttribute("data-model-picker-view", view);
+    const locked = view === "advanced";
+    for (const [name, value] of [
+      ["inert", ""],
+      ["aria-hidden", "true"],
+    ] as const) {
+      if (locked) this.simpleArea.setAttribute(name, value);
+      else this.simpleArea.removeAttribute(name);
+    }
+    if (this.powerRow) {
+      if (locked) {
+        this.powerRow.setAttribute("aria-disabled", "true");
+        this.powerRow.setAttribute("data-disabled", "");
+      } else {
+        this.powerRow.removeAttribute("aria-disabled");
+        this.powerRow.removeAttribute("data-disabled");
+      }
+    }
+  }
+
+  closeMenu(): void {
+    if (this.options.escapeIgnored) return;
+    this.menuOpen = false;
+    this.menu.setAttribute("data-state", "closed");
+    this.trigger.setAttribute("aria-expanded", "false");
+    this.trigger.setAttribute("data-state", "closed");
+    this.trigger.removeAttribute("aria-controls");
+    if (this.activeElement === this.powerRow) this.activeElement = this.editor;
+  }
+
+  private clickModel(row: FakeElement): void {
+    if (this.view !== "advanced") return;
+    const label = this.modelRows.find((entry) => entry.row === row)?.label;
+    if (!this.options.modelClickIgnored && label) this.setChecked(label);
+    if (this.options.afterModelClick === "close") this.closeMenu();
+    else this.setView("simple");
+  }
+
+  toggleList(): void {
+    this.listOpen = !this.listOpen;
+    this.addContext.setAttribute("data-state", this.listOpen ? "open" : "closed");
+    this.addContext.setAttribute("aria-expanded", this.listOpen ? "true" : "false");
+  }
+
+  private insertMention(): void {
+    this.insertDeepResearchState("mention");
+    this.toggleList();
+  }
+
+  private insertDeepResearchState(mode: NonNullable<FakePickerOptions["deepResearch"]>): void {
+    const el = (tag: string, attrs: Attributes = {}, text = "") =>
+      new FakeElement(this, tag, attrs, text);
+    const mentionAttrs = {
+      contenteditable: "false",
+      "app-mention-path": TOKEN,
+      "data-prompt-link-href": TOKEN,
+      "data-appearance": "inline-mention",
+    };
+    const nodes: FakeElement[] = [];
+    if (mode === "mention" || mode === "mention-and-link") {
+      nodes.push(el("span", mentionAttrs).append(el("span", {}, "Deep research")));
+    }
+    if (mode === "prompt-link" || mode === "mention-and-link") {
+      nodes.push(el("a", { href: TOKEN }, TOKEN));
+    } else if (mode === "editable-attribute") {
+      nodes.push(el("span", { "data-prompt-link-href": TOKEN }, "typed"));
+    } else if (mode === "arbitrary-attribute") {
+      nodes.push(el("span", { contenteditable: "false", "data-token": TOKEN }, "Deep research"));
+    } else if (mode === "chip-child-editable") {
+      nodes.push(
+        el("span", { "data-id": "plugin:other" }).append(
+          el("span", { contenteditable: "true", "data-token": TOKEN }, "child"),
+        ),
+      );
+    } else if (mode === "mention-editable-child") {
+      nodes.push(
+        el("span", { contenteditable: "false", "data-appearance": "inline-mention" }).append(
+          el("span", { contenteditable: "true", "app-mention-path": TOKEN }, "child"),
+        ),
+      );
+    }
+    if (nodes.length === 0) return;
+    // The mention goes before the prompt text, like ChatGPT inserting it at the caret.
+    const text = this.paragraph.ownText;
+    this.paragraph.ownText = "";
+    this.paragraph.append(...nodes, new FakeElement(this, "span", {}, ` ${text}`));
+  }
+
+  mentionPresent(): boolean {
+    return this.editor
+      .querySelectorAll("[app-mention-path]")
+      .some((node) => node.getAttribute("contenteditable") === "false");
+  }
+
+  /** CDP Input.dispatchMouseEvent: a press+release at a point clicks the element there. */
+  mouse(type: string, x: number, y: number): void {
+    if (type !== "mouseReleased") return;
+    const target = this.elementFromPoint(x, y);
+    if (!target) return;
+    let node: FakeElement | null = target;
+    while (node && !this.actions.has(node)) node = node.parent;
+    this.clicks.push(node?.getAttribute("aria-label") ?? node?.textContent ?? "(none)");
+    if (node) this.actions.get(node)?.();
+  }
+
+  /** CDP Input.dispatchKeyEvent: keys go to the focused element. */
+  key(type: string, key: string, modifiers = 0): void {
+    if (type !== "rawKeyDown" && type !== "keyDown") return;
+    this.sentKeys.push(modifiers ? `${key}+${modifiers}` : key);
+    if (key === "Escape") {
+      if (this.listOpen) this.toggleList();
+      else if (this.menuOpen) this.closeMenu();
+      return;
+    }
+    if (key === "a" && modifiers === 2 && this.activeElement === this.editor) {
+      this.selectAllArmed = true;
+      return;
+    }
+    if (key === "Backspace" && this.selectAllArmed && this.activeElement === this.editor) {
+      this.paragraph.children.length = 0;
+      this.paragraph.ownText = "";
+      this.selectAllArmed = false;
+      return;
+    }
+    if (key !== "ArrowRight" && key !== "ArrowLeft") return;
+    if (!this.slider || !this.powerRow || this.activeElement !== this.powerRow || !this.menuOpen) {
+      return;
+    }
+    if (this.powerRow.hasAttribute("aria-disabled") || this.options.sliderAlwaysDisabled) return;
     const min = Number(this.slider.getAttribute("aria-valuemin"));
     const max = Number(this.slider.getAttribute("aria-valuemax"));
     const step = this.options.keyStep ?? 1;
     const current = this.sliderValue ?? 0;
-    const next =
-      key === "ArrowRight" ? current + step : key === "ArrowLeft" ? current - step : current;
+    const next = key === "ArrowRight" ? current + step : current - step;
     this.slider.setAttribute("aria-valuenow", String(Math.max(min, Math.min(max, next))));
   }
 
@@ -410,11 +567,7 @@ export class FakePickerDom {
       getElementById: (id: string) =>
         [this.body, ...this.body.descendants()].find((node) => node.getAttribute("id") === id) ??
         null,
-      dispatchEvent: (event: { type: string; key?: string }) => {
-        this.events.push({ type: event.type, target: "document" });
-        if (event.type === "keydown" && event.key === "Escape") this.closeAll();
-        return true;
-      },
+      elementFromPoint: (x: number, y: number) => this.elementFromPoint(x, y),
     };
     Object.defineProperty(facade, "activeElement", {
       get: () => this.activeElement ?? this.body,
@@ -424,58 +577,35 @@ export class FakePickerDom {
 
   /** Evaluates a page expression against this DOM the way Runtime.evaluate would. */
   async evaluate(expression: string): Promise<unknown> {
-    class FakeEvent {
-      constructor(
-        readonly type: string,
-        readonly init: Record<string, unknown> = {},
-      ) {}
-      get key() {
-        return this.init.key as string | undefined;
-      }
-    }
-    let now = 0;
-    const run = new Function(
-      "document",
-      "window",
-      "performance",
-      "setTimeout",
-      "EventTarget",
-      "MouseEvent",
-      "PointerEvent",
-      "KeyboardEvent",
-      `return ${expression};`,
-    );
-    return await run(
-      this.documentFacade(),
-      { PointerEvent: FakeEvent },
-      { now: () => (now += 50) },
-      (handler: () => void) => {
-        queueMicrotask(handler);
-        return 0;
-      },
-      FakeElement,
-      FakeEvent,
-      FakeEvent,
-      FakeEvent,
-    );
+    const run = new Function("document", "window", `return ${expression};`);
+    return await run(this.documentFacade(), {});
   }
 
   /** Chrome-like Runtime/Input pair backed by this DOM. */
-  cdp(): {
-    Runtime: {
-      evaluate: (params: { expression: string }) => Promise<{ result: { value: unknown } }>;
-    };
-    Input: { dispatchKeyEvent: (params: { type: string; key: string }) => Promise<void> };
-  } {
+  cdp() {
     return {
       Runtime: {
-        evaluate: async ({ expression }) => ({
+        evaluate: async ({ expression }: { expression: string }) => ({
           result: { value: await this.evaluate(expression) },
         }),
       },
       Input: {
-        dispatchKeyEvent: async ({ type, key }) => {
-          if (type === "rawKeyDown" || type === "keyDown") this.pressKey(key);
+        dispatchMouseEvent: async ({ type, x, y }: { type: string; x: number; y: number }) => {
+          this.mouse(type, x, y);
+        },
+        dispatchKeyEvent: async ({
+          type,
+          key,
+          modifiers,
+        }: {
+          type: string;
+          key: string;
+          modifiers?: number;
+        }) => {
+          this.key(type, key, modifiers ?? 0);
+        },
+        insertText: async ({ text }: { text: string }) => {
+          this.paragraph.append(new FakeElement(this, "span", {}, text));
         },
       },
     };
