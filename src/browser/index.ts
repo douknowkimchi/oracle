@@ -1518,7 +1518,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
     const preSubmitPlan = resolvePreSubmitPlan(config, {
       requestedModel: options.requestedModel,
-      resumingConversation: isResumingConversation,
     });
     const preSubmitGate = preSubmitPlan
       ? createPreSubmitGate(Runtime, preSubmitPlan, logger, {
@@ -1690,7 +1689,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         onPromptSubmitted: markPromptSubmitted,
         beforeSend: preSubmitGate?.beforeSend({
           attachmentCount: submissionAttachments.length,
-          prompt,
         }),
       };
       const deepResearchTargetBaseline =
@@ -1707,7 +1705,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       if (preSubmitGate?.stopped) {
         const stopCleanupWarnings = await clearComposerAfterStop(Runtime, logger, {
           attachmentCount: submissionAttachments.length,
-          prompt,
         });
         return {
           baselineTurns,
@@ -3189,7 +3186,6 @@ async function runRemoteBrowserMode(
     const modelStrategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
     const preSubmitPlan = resolvePreSubmitPlan(config, {
       requestedModel: options.requestedModel,
-      resumingConversation: Boolean(config.resumeConversationUrl),
     });
     const preSubmitGate = preSubmitPlan
       ? createPreSubmitGate(Runtime, preSubmitPlan, logger, {
@@ -3319,7 +3315,6 @@ async function runRemoteBrowserMode(
         onPromptSubmitted: markPromptSubmitted,
         beforeSend: preSubmitGate?.beforeSend({
           attachmentCount: submissionAttachments.length,
-          prompt,
         }),
       };
       const deepResearchTargetBaseline =
@@ -3336,7 +3331,6 @@ async function runRemoteBrowserMode(
       if (preSubmitGate?.stopped) {
         const stopCleanupWarnings = await clearComposerAfterStop(Runtime, logger, {
           attachmentCount: submissionAttachments.length,
-          prompt,
         });
         return {
           baselineTurns,

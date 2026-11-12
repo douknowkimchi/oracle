@@ -1660,6 +1660,40 @@ describe("exact model submenu selection (GPT-6)", () => {
     expect(dom.checkedModels()).toEqual(["GPT-5.6 Sol"]);
   });
 
+  it("never selects a row whose description, not title, reads GPT-6", async () => {
+    const { dom, Runtime, logger } = setupPicker({
+      models: [{ label: "GPT-6 mini", description: "GPT-6" }, { label: "GPT-5.6 Sol" }],
+      checkedModel: "GPT-5.6 Sol",
+    });
+
+    await expect(ensureModelSelection(Runtime, "GPT-6", logger, "select")).rejects.toThrow(
+      /option not found/,
+    );
+    expect(dom.checkedModels()).toEqual(["GPT-5.6 Sol"]);
+  });
+
+  it("reports the observed title of the checked row", async () => {
+    const { Runtime } = setupPicker({
+      models: [{ label: "GPT-6 mini", description: "fast" }, { label: "GPT-6" }],
+      checkedModel: "GPT-6 mini",
+    });
+
+    await expect(readModelSubmenuSelection(Runtime, "GPT-6")).resolves.toEqual({
+      ok: true,
+      targetChecked: false,
+      checkedLabels: ["GPT-6 mini"],
+    });
+  });
+
+  it("fails a read when the picker cannot be closed", async () => {
+    const { dom, Runtime } = setupPicker({ checkedModel: "GPT-6", escapeIgnored: true });
+
+    await expect(readModelSubmenuSelection(Runtime, "GPT-6")).resolves.toMatchObject({
+      ok: false,
+      failure: { reason: "menu-not-closed" },
+    });
+    expect(dom.menuOpen).toBe(true);
+  });
   it("fails when the click does not change the checked row", async () => {
     const { Runtime, logger, logs } = setupPicker({
       checkedModel: "GPT-5.6 Sol",

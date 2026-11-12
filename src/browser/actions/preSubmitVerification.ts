@@ -17,6 +17,7 @@ import { clearComposerAttachments } from "./attachments.js";
 
 /** What the final check must prove right before send. */
 export interface PreSubmitPlan {
+  /** Requested model id, or null when the model is not part of the final check. */
   requestedModel: string | null;
   /** Exact model submenu label to verify, or null when the model is not verifiable there. */
   modelLabel: string | null;
@@ -34,13 +35,13 @@ export function resolvePreSubmitPlan(
     ResolvedBrowserConfig,
     "desiredModel" | "modelStrategy" | "thinkingTime" | "researchMode" | "stopBeforeSubmit"
   >,
-  options: { requestedModel?: string | null; resumingConversation: boolean },
+  options: { requestedModel?: string | null },
 ): PreSubmitPlan | null {
   const strategy = config.modelStrategy ?? DEFAULT_MODEL_STRATEGY;
+  // Resumed conversations skip selection but are still read here, so a different checked
+  // model fails before send. current/ignore never verify the model.
   const modelLabel =
-    strategy === "select" &&
-    !options.resumingConversation &&
-    isModelSubmenuLabel(config.desiredModel)
+    strategy === "select" && isModelSubmenuLabel(config.desiredModel)
       ? (config.desiredModel ?? null)
       : null;
   const requestedEffort = config.thinkingTime ?? null;
@@ -50,7 +51,9 @@ export function resolvePreSubmitPlan(
     return null;
   }
   return {
-    requestedModel: options.requestedModel ?? config.desiredModel ?? null,
+    // Only a model that the final check re-reads is reported as requested; verified=true must
+    // never cover a model nobody looked at.
+    requestedModel: modelLabel ? (options.requestedModel ?? config.desiredModel ?? null) : null,
     modelLabel,
     requestedEffort,
     deepResearch,
@@ -66,7 +69,7 @@ export function resolvePreSubmitPlan(
 export async function verifyComposerBeforeSubmit(
   Runtime: ChromeClient["Runtime"],
   plan: PreSubmitPlan,
-  submission: { attachmentCount: number; prompt: string },
+  submission: { attachmentCount: number },
   logger: BrowserLogger,
 ): Promise<BrowserPreSubmitVerification> {
   const mismatches: string[] = [];
@@ -115,14 +118,21 @@ export async function verifyComposerBeforeSubmit(
     }
   }
 
-  // Read last: the token must survive prompt, attachments and the picker reads above.
-  const token = await readDeepResearchComposerToken(Runtime, { prompt: submission.prompt });
+  // Read last: the chip must survive prompt, attachments and the picker reads above.
+  const token = await readDeepResearchComposerToken(Runtime);
   if (!token.composerFound) {
     mismatches.push("composer: no single visible composer form holds the prompt");
   }
-  if (plan.deepResearch && !token.present) {
-    mismatches.push("deep research: connector token is missing from the composer");
-    diagnostics.deepResearch = token;
+  if (plan.deepResearch) {
+    logger(
+      `[browser] Pre-submit Deep Research token diagnostic: ${JSON.stringify(token.occurrences)}`,
+    );
+    if (!token.present) {
+      mismatches.push(
+        "deep research: no connector chip with the Deep Research token in the composer",
+      );
+      diagnostics.deepResearch = token;
+    }
   }
 
   const observedLevel =
@@ -177,10 +187,7 @@ export type PreSendSelectionStage =
 
 export interface PreSubmitGate {
   /** submitPrompt hook: runs the final check, then returns "stop" or "send". */
-  beforeSend: (submission: {
-    attachmentCount: number;
-    prompt: string;
-  }) => () => Promise<BeforeSendDecision>;
+  beforeSend: (submission: { attachmentCount: number }) => () => Promise<BeforeSendDecision>;
   /**
    * Runs a selection owner (after its own retries). When it finally fails before any send
    * decision, the error is rethrown carrying `details.preSubmitVerification` with
@@ -212,15 +219,26 @@ export function createPreSubmitGate(
   let stopped = false;
   let sendDecided = false;
   return {
-    beforeSend: (submission) => async () => {
-      evidence = await verifyComposerBeforeSubmit(Runtime, plan, submission, logger);
-      options.onVerified?.(evidence);
-      if (plan.stopBeforeSubmit) {
-        stopped = true;
-        return "stop";
+    beforeSend: (submission) => {
+      // Fixed per submission: a retry or follow-up after an earlier attempt reached the send
+      // step must not claim that nothing was sent or replace the run's first evidence.
+      if (sendDecided) {
+        return async () => {
+          await verifyLaterSubmission(Runtime, plan, submission, logger);
+          return "send";
+        };
       }
-      sendDecided = true;
-      return "send";
+      return async () => {
+        const firstEvidence = await verifyComposerBeforeSubmit(Runtime, plan, submission, logger);
+        evidence = firstEvidence;
+        options.onVerified?.(firstEvidence);
+        if (plan.stopBeforeSubmit) {
+          stopped = true;
+          return "stop";
+        }
+        sendDecided = true;
+        return "send";
+      };
     },
     guardSelection: async (stage, attachmentCount, action) => {
       try {
@@ -257,6 +275,34 @@ export function createPreSubmitGate(
       return stopped;
     },
   };
+}
+
+/**
+ * Final check for a submission made after an earlier attempt in the same run reached the send
+ * step (follow-up prompt or post-send retry). A mismatch still blocks this send, but the error
+ * neither claims that nothing was sent nor carries session-level pre-submit evidence.
+ */
+async function verifyLaterSubmission(
+  Runtime: ChromeClient["Runtime"],
+  plan: PreSubmitPlan,
+  submission: { attachmentCount: number },
+  logger: BrowserLogger,
+): Promise<void> {
+  try {
+    await verifyComposerBeforeSubmit(Runtime, plan, submission, logger);
+  } catch (error) {
+    const laterEvidence = readPreSubmitEvidence(error);
+    if (!laterEvidence) throw error;
+    throw new BrowserAutomationError(
+      `Pre-submit verification failed for a later submission; this prompt was not sent, but an earlier prompt in this run had already reached the send step. ${laterEvidence.mismatches.join("; ")}`,
+      {
+        stage: "later-submission-verification",
+        code: "later-submission-mismatch",
+        laterSubmissionVerification: laterEvidence,
+      },
+      error,
+    );
+  }
 }
 
 /** Runs a selection owner through the gate when the run has a pre-submit plan. */
@@ -316,7 +362,7 @@ function buildSelectionFailureEvidence(
 export async function clearComposerAfterStop(
   Runtime: ChromeClient["Runtime"],
   logger: BrowserLogger,
-  submission: { attachmentCount: number; prompt: string },
+  submission: { attachmentCount: number },
 ): Promise<BrowserRunWarning[]> {
   const warnings: BrowserRunWarning[] = [];
   const attempt = async (code: string, action: () => Promise<void>) => {
@@ -335,10 +381,10 @@ export async function clearComposerAfterStop(
     );
   }
   await attempt("stop-cleanup-deep-research", async () => {
-    const token = await readDeepResearchComposerToken(Runtime, { prompt: "" });
+    const token = await readDeepResearchComposerToken(Runtime);
     if (token.present) {
       throw new Error(
-        `Deep Research connector token is still in the composer (${token.locations.join(", ")}).`,
+        `Deep Research connector chip is still in the composer (${JSON.stringify(token.occurrences.filter((entry) => entry.accepted))}).`,
       );
     }
   });

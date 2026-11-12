@@ -224,7 +224,6 @@ describe("promptComposer", () => {
       const promise = promptComposer.attemptSendButton(
         runtime as never,
         (() => undefined) as never,
-        undefined,
         ["oracle-attach-verify.txt"],
       );
       const assertion = expect(promise).rejects.toThrow(/after 45s/i);
@@ -258,7 +257,7 @@ describe("promptComposer", () => {
           };
         }
         if (expression.includes("button.scrollIntoView")) {
-          return { result: { value: { status: "clicked" } } };
+          return { result: { value: { status: "point", x: 10, y: 20 } } };
         }
         return {
           result: {
@@ -278,7 +277,7 @@ describe("promptComposer", () => {
         };
       }),
     };
-    const input = { insertText: vi.fn(), dispatchKeyEvent: vi.fn() };
+    const input = { insertText: vi.fn(), dispatchKeyEvent: vi.fn(), dispatchMouseEvent: vi.fn() };
     const logger = Object.assign(vi.fn(), { verbose: false });
 
     await submitPrompt(
@@ -293,6 +292,10 @@ describe("promptComposer", () => {
     );
 
     expect(onPromptSubmitted).toHaveBeenCalledTimes(1);
+    expect(input.dispatchMouseEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "mousePressed", x: 10, y: 20 }),
+    );
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
   });
 
   test("waits for a delayed trusted click without issuing a second send", async () => {
@@ -309,15 +312,10 @@ describe("promptComposer", () => {
         }),
       };
 
-      const result = promptComposer.attemptSendButton(
-        { evaluate } as never,
-        input as never,
-        undefined,
-        undefined,
-      );
+      const result = promptComposer.attemptSendButton({ evaluate } as never, input as never);
       await vi.advanceTimersByTimeAsync(1_000);
 
-      await expect(result).resolves.toBe(true);
+      await expect(result).resolves.toBe("clicked");
       expect(evaluate).toHaveBeenCalledTimes(1);
       expect(input.dispatchMouseEvent).toHaveBeenCalledTimes(3);
     } finally {

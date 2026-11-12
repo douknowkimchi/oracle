@@ -87,68 +87,103 @@ export async function activateDeepResearch(
 /** Connector reference ChatGPT places in the composer once Deep Research is selected. */
 const DEEP_RESEARCH_COMPOSER_TOKEN = "app://connector_openai_deep_research";
 
+/**
+ * Selected connectors render as chips in the composer form. The Webdex contract identifies a
+ * selected connector by `[data-id^="plugin:"]` inside the composer form; whether the Deep
+ * Research chip carries the connector URI in its attributes still needs live confirmation.
+ */
+const CONNECTOR_CHIP_SELECTOR = '[data-id^="plugin:"]';
+
+export interface DeepResearchTokenOccurrence {
+  tag: string;
+  role: string | null;
+  attributes: string[];
+  textMatch: boolean;
+  insideComposer: boolean;
+  insideEditable: boolean;
+  insideNonEditable: boolean;
+  chipDataId: string | null;
+  accepted: boolean;
+  reason: string;
+}
+
 export interface DeepResearchComposerTokenState {
   composerFound: boolean;
+  /** True only when a connector chip in the prompt's composer carries the token. */
   present: boolean;
-  /** Where the token was found inside the composer form, e.g. "a[href]" or "span:text". */
-  locations: string[];
-  /** Attribute occurrences outside the composer form (diagnostic only). */
-  outsideComposer: number;
+  /** Every node holding the token string, accepted or not (bounded diagnostic). */
+  occurrences: DeepResearchTokenOccurrence[];
 }
 
 /**
- * Reads whether the Deep Research connector token is inside the same composer form as the
- * prompt editor, then returns focus to that editor. Text matches inside the editable prompt
- * count only when the prompt itself does not contain the token string.
+ * Reads whether a Deep Research connector chip is in the same composer form as the prompt
+ * editor, then returns focus to that editor. Prompt text, links typed into the prompt and any
+ * other editable content never count: only a visible connector chip (outside the editable text
+ * or inside a non-editable decorator node) whose attributes carry the connector URI does.
  */
 export async function readDeepResearchComposerToken(
   Runtime: ChromeClient["Runtime"],
-  options: { prompt: string },
 ): Promise<DeepResearchComposerTokenState> {
   const { result } = await Runtime.evaluate({
-    expression: buildDeepResearchComposerTokenExpression(
-      !options.prompt.includes(DEEP_RESEARCH_COMPOSER_TOKEN),
-    ),
+    expression: buildDeepResearchComposerTokenExpression(),
     returnByValue: true,
   });
   const value = result?.value as DeepResearchComposerTokenState | undefined;
-  return value ?? { composerFound: false, present: false, locations: [], outsideComposer: 0 };
+  return value ?? { composerFound: false, present: false, occurrences: [] };
 }
 
-function buildDeepResearchComposerTokenExpression(allowEditableText: boolean): string {
+function buildDeepResearchComposerTokenExpression(): string {
   return `(() => {
     ${buildComposerPickerHelpers()}
     const TOKEN = ${JSON.stringify(DEEP_RESEARCH_COMPOSER_TOKEN)};
-    const ALLOW_EDITABLE_TEXT = ${JSON.stringify(allowEditableText)};
-    const attributeHits = (node) =>
-      Array.from(node.attributes || [])
-        .filter((attr) => String(attr.value || '').includes(TOKEN))
-        .map((attr) => String(node.tagName || '').toLowerCase() + '[' + attr.name + ']');
+    const CHIP_SELECTOR = ${JSON.stringify(CONNECTOR_CHIP_SELECTOR)};
     const composer = pickerComposerForm();
-    let outsideComposer = 0;
+    const occurrences = [];
+    let present = false;
     for (const node of document.querySelectorAll('*')) {
-      if (composer && composer.form.contains(node)) continue;
-      if (attributeHits(node).length > 0) outsideComposer += 1;
-    }
-    if (!composer) return { composerFound: false, present: false, locations: [], outsideComposer };
-    const locations = [];
-    for (const node of [composer.form, ...composer.form.querySelectorAll('*')]) {
-      locations.push(...attributeHits(node));
+      const attributes = Array.from(node.attributes || [])
+        .filter((attr) => String(attr.value || '').includes(TOKEN))
+        .map((attr) => attr.name);
       const isLeaf = !node.children || node.children.length === 0;
-      if (!isLeaf || !String(node.textContent || '').includes(TOKEN)) continue;
-      const editable = Boolean(node.closest?.('[contenteditable="true"]')) &&
-        !node.closest?.('[contenteditable="false"]');
-      if (!editable || ALLOW_EDITABLE_TEXT) {
-        locations.push(String(node.tagName || '').toLowerCase() + ':text');
+      const textMatch = isLeaf && String(node.textContent || '').includes(TOKEN);
+      if (attributes.length === 0 && !textMatch) continue;
+      const insideComposer = Boolean(composer && composer.form.contains(node));
+      const chip = node.closest?.(CHIP_SELECTOR) || null;
+      const insideEditable = Boolean(node.closest?.('[contenteditable="true"]'));
+      const insideNonEditable = Boolean(node.closest?.('[contenteditable="false"]'));
+      const chipEditable =
+        chip && Boolean(chip.closest?.('[contenteditable="true"]')) &&
+        !chip.closest?.('[contenteditable="false"]');
+      let reason = 'connector-chip';
+      if (!insideComposer) reason = 'outside-composer';
+      else if (attributes.length === 0) reason = 'text-only';
+      else if (node.closest?.('a')) reason = 'inside-link';
+      else if (!chip || !composer.form.contains(chip)) reason = 'not-connector-chip';
+      else if (chipEditable) reason = 'editable-content';
+      else if (!pickerVisible(chip)) reason = 'chip-hidden';
+      const accepted = reason === 'connector-chip';
+      present = present || accepted;
+      if (occurrences.length < 12) {
+        occurrences.push({
+          tag: String(node.tagName || '').toLowerCase(),
+          role: node.getAttribute?.('role') ?? null,
+          attributes,
+          textMatch,
+          insideComposer,
+          insideEditable,
+          insideNonEditable,
+          chipDataId: chip ? pickerRedact(chip.getAttribute('data-id'), 80) : null,
+          accepted,
+          reason,
+        });
       }
     }
     try {
-      composer.editor?.focus?.({ preventScroll: true });
+      composer?.editor?.focus?.({ preventScroll: true });
     } catch {}
-    return { composerFound: true, present: locations.length > 0, locations: locations.slice(0, 8), outsideComposer };
+    return { composerFound: Boolean(composer), present, occurrences };
   })()`;
 }
-
 async function clickTrustedPoint(
   Runtime: ChromeClient["Runtime"],
   Input: ChromeClient["Input"],

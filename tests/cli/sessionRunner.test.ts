@@ -1227,6 +1227,58 @@ describe("performSessionRun", () => {
     });
   });
 
+  test("keeps the first submission's evidence when a later submission fails its check", async () => {
+    const evidence = {
+      requestedModel: "gpt-6",
+      resolvedModelLabel: "GPT-6",
+      modelChecked: true,
+      requestedEffort: "pro" as const,
+      observedEffortIndex: 4,
+      observedEffortLabel: "Pro",
+      effortRangeMin: 0,
+      effortRangeMax: 4,
+      deepResearchRequested: false,
+      deepResearchTokenPresent: false,
+      attachmentCount: 0,
+      verified: true,
+      stoppedBeforeSubmit: false,
+      mismatches: [],
+      capturedAt: "2026-11-13T00:00:00.000Z",
+    };
+    vi.mocked(runBrowserSessionExecution).mockImplementationOnce(async (_args, deps) => {
+      await deps?.persistRuntimeHint?.(
+        { chromePort: 9222, promptSubmitted: true },
+        undefined,
+        evidence,
+      );
+      throw new BrowserAutomationError(
+        "Pre-submit verification failed for a later submission; this prompt was not sent, but an earlier prompt in this run had already reached the send step.",
+        {
+          stage: "later-submission-verification",
+          laterSubmissionVerification: { ...evidence, verified: false, mismatches: ["model"] },
+        },
+      );
+    });
+
+    await expect(
+      performSessionRun({
+        sessionMeta: baseSessionMeta,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toThrow(/later submission/);
+
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: "error",
+      browser: expect.objectContaining({ preSubmitVerification: evidence }),
+    });
+  });
   test("keeps plain browser runs without pre-submit evidence", async () => {
     sessionStoreMock.updateSession.mockClear();
     vi.mocked(runBrowserSessionExecution).mockImplementationOnce(async (_args, deps) => {

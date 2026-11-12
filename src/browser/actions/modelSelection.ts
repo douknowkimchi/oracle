@@ -26,8 +26,8 @@ export function isModelSubmenuLabel(label: string | null | undefined): boolean {
 type SubmenuModelOutcome =
   | {
       status: "already-selected" | "switched" | "read";
-      label: string;
       targetChecked: boolean;
+      /** Observed titles of the checked rows. */
       checkedLabels: string[];
     }
   | ComposerPickerFailure;
@@ -153,13 +153,15 @@ async function ensureSubmenuModelSelection(
       `Model picker: ${reason.replaceAll("-", " ")} for exact model label "${desiredModel}"; refusing to fall back to another model.`,
     );
   }
-  assertResolvedModelSelection(desiredModel, result.label);
+  // Evidence records the title observed on the single checked row, never the requested label.
+  const observedLabel = result.checkedLabels[0];
+  assertResolvedModelSelection(desiredModel, observedLabel);
   logger(
-    `Model picker: ${result.label}${result.status === "already-selected" ? " (already selected)" : ""}`,
+    `Model picker: ${observedLabel}${result.status === "already-selected" ? " (already selected)" : ""}`,
   );
   return {
     requestedModel: desiredModel,
-    resolvedLabel: result.label,
+    resolvedLabel: observedLabel,
     strategy: "select",
     status: result.status === "read" ? "already-selected" : result.status,
     verified: true,
@@ -204,50 +206,61 @@ function buildSubmenuModelExpression(label: string, mode: "select" | "read"): st
     ${buildComposerPickerHelpers()}
     const TARGET = ${JSON.stringify(label)};
     const MODE = ${JSON.stringify(mode)};
-    const closeCurrentPicker = async () => {
+    const currentTrigger = () => {
       const composer = pickerComposerForm();
-      await pickerCloseAll(composer ? pickerTrigger(composer.form) : null);
+      return composer ? pickerTrigger(composer.form) : null;
     };
+    // Reads the checked rows by their observed titles. The target row must be the only row
+    // titled exactly TARGET and every row must expose a title.
     const readSelection = async () => {
       const found = await pickerOpenModelSubmenu(TARGET);
       if (found.failure) return { failure: found.failure };
-      if (found.matches.length !== 1) {
-        const failure = pickerFailure('option-ambiguous', {
-          labels: found.items.map((item) => pickerRedact(item.labels[0] ?? '', 60)),
-        });
+      const titles = found.items.map((item) => item.title ?? '(untitled)');
+      if (found.matches.length !== 1 || found.items.some((item) => !item.title)) {
         await pickerCloseAll(found.trigger);
-        return { failure };
+        return {
+          failure: pickerFailure(found.matches.length !== 1 ? 'option-ambiguous' : 'option-not-found', {
+            titles: titles.map((title) => pickerRedact(title, 60)),
+          }),
+        };
       }
       const checked = found.items.filter((item) => item.checked);
       return {
         found,
-        checkedLabels: checked.map((item) => pickerPrimaryLabel(item, TARGET)),
+        checkedLabels: checked.map((item) => item.title),
         targetChecked: checked.length === 1 && checked[0] === found.matches[0],
       };
     };
+    // An open picker can swallow the later send click, so a read only counts once it is closed.
+    const closeOrFail = async (trigger, result) =>
+      (await pickerCloseAll(trigger))
+        ? result
+        : pickerFailure('menu-not-closed', { trigger: pickerDescribe(trigger) });
     const current = await readSelection();
     if (current.failure) return current.failure;
     if (MODE === 'read' || current.targetChecked) {
-      await pickerCloseAll(current.found.trigger);
-      return {
+      return closeOrFail(current.found.trigger, {
         status: MODE === 'read' ? 'read' : 'already-selected',
-        label: TARGET,
         targetChecked: current.targetChecked,
         checkedLabels: current.checkedLabels,
-      };
+      });
     }
     pickerClick(current.found.matches[0].node);
     await pickerSleep(300);
-    await closeCurrentPicker();
+    if (!(await pickerCloseAll(currentTrigger()))) {
+      return pickerFailure('menu-not-closed', { trigger: pickerDescribe(currentTrigger()) });
+    }
     const after = await readSelection();
     if (after.failure) {
       return pickerFailure('selection-unverified', { cause: after.failure.reason, detail: after.failure.diagnostic });
     }
-    await pickerCloseAll(after.found.trigger);
-    return { status: 'switched', label: TARGET, targetChecked: after.targetChecked, checkedLabels: after.checkedLabels };
+    return closeOrFail(after.found.trigger, {
+      status: 'switched',
+      targetChecked: after.targetChecked,
+      checkedLabels: after.checkedLabels,
+    });
   })()`;
 }
-
 function assertResolvedModelSelection(desiredModel: string, resolvedLabel: string): void {
   if (SUBMENU_ONLY_MODEL_LABELS.has(desiredModel)) {
     if (resolvedLabel !== desiredModel) {

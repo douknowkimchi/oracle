@@ -221,19 +221,22 @@ export async function submitPrompt(
     );
   }
 
-  if (deps.beforeSend && (await deps.beforeSend()) === "stop") {
+  // beforeSend runs at the click/Enter boundary, after every readiness wait.
+  let attempt = await attemptSendButton(
+    runtime,
+    input,
+    deps?.attachmentNames,
+    deps?.attachmentTimeoutMs,
+    deps.beforeSend,
+  );
+  if (attempt === "button-missing" && deps.beforeSend && (await deps.beforeSend()) === "stop") {
+    attempt = "stopped";
+  }
+  if (attempt === "stopped") {
     logger("Stopped before submit; the prompt was not sent.");
     return null;
   }
-
-  const clicked = await attemptSendButton(
-    runtime,
-    input,
-    logger,
-    deps?.attachmentNames,
-    deps?.attachmentTimeoutMs,
-  );
-  if (!clicked) {
+  if (attempt === "button-missing") {
     await input.dispatchKeyEvent({
       type: "keyDown",
       ...ENTER_KEY_EVENT,
@@ -658,16 +661,109 @@ export function buildAttachmentReadyExpressionForTest(attachmentNames: Attachmen
   return buildAttachmentReadyExpression(attachmentNames);
 }
 
+type SendAttempt = "clicked" | "stopped" | "button-missing";
+
+type SendButtonLocation =
+  | { status: "point"; x: number; y: number }
+  | { status: "no-rect" | "missing" };
+
+/**
+ * Waits for attachments and an enabled send button, then runs `beforeSend` at the last boundary
+ * before the click: after every wait, immediately followed by a fresh button lookup and the click.
+ * If that lookup fails, the loop waits again and the check runs again before any later click.
+ */
 async function attemptSendButton(
   Runtime: ChromeClient["Runtime"],
   Input: ChromeClient["Input"],
-  _logger?: BrowserLogger,
   attachmentNames?: AttachmentReadyInput[],
   attachmentTimeoutMs?: number | null,
-): Promise<boolean> {
+  beforeSend?: () => Promise<BeforeSendDecision>,
+): Promise<SendAttempt> {
   const needAttachment = Array.isArray(attachmentNames) && attachmentNames.length > 0;
-  const script = `(() => {
+  const attachmentsReady = async (): Promise<boolean> => {
+    if (!needAttachment) return true;
+    const ready = await Runtime.evaluate({
+      expression: buildAttachmentReadyExpression(attachmentNames),
+      returnByValue: true,
+    });
+    return Boolean(ready?.result?.value);
+  };
+  const locate = async (): Promise<SendButtonLocation> => {
+    const { result } = await Runtime.evaluate({
+      expression: buildSendButtonExpression("locate"),
+      returnByValue: true,
+    });
+    const value = result?.value as Partial<SendButtonLocation> | undefined;
+    if (
+      value?.status === "point" &&
+      typeof (value as { x?: unknown }).x === "number" &&
+      typeof (value as { y?: unknown }).y === "number"
+    ) {
+      return value as SendButtonLocation;
+    }
+    return { status: value?.status === "no-rect" ? "no-rect" : "missing" };
+  };
+  const click = async (location: SendButtonLocation): Promise<boolean> => {
+    if (location.status === "point") {
+      await clickTrustedPoint(Runtime, Input, location.x, location.y);
+      return true;
+    }
+    // Last-resort fallback for unusual DOMs where the button is visible but has no useful rect.
+    const { result } = await Runtime.evaluate({
+      expression: buildSendButtonExpression("dispatch-click"),
+      returnByValue: true,
+    });
+    return (result?.value as { status?: string } | undefined)?.status === "clicked";
+  };
+
+  // Give attachment-bearing submissions more headroom. ChatGPT's chip render can
+  // settle slowly for multi-file uploads, but plain text sends should keep the
+  // shorter historical deadline.
+  const timeoutMs = sendButtonTimeoutMs(attachmentNames, attachmentTimeoutMs);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await attachmentsReady())) {
+      await delay(150);
+      continue;
+    }
+    let location = await locate();
+    if (location.status === "missing") {
+      break;
+    }
+    if (beforeSend) {
+      if ((await beforeSend()) === "stop") return "stopped";
+      // No waiting after the check: re-read readiness and the button, then click at once.
+      location = (await attachmentsReady()) ? await locate() : { status: "missing" };
+      if (location.status === "missing") {
+        await delay(100);
+        continue;
+      }
+    }
+    if (await click(location)) {
+      return "clicked";
+    }
+    await delay(100);
+  }
+  if (needAttachment) {
+    throw new BrowserAutomationError(
+      `Attachments never reached a clickable send button after ${Math.ceil(
+        timeoutMs / 1000,
+      )}s; tune --browser-attachment-timeout.`,
+      {
+        stage: "submit-prompt",
+        code: "attachment-send-not-ready",
+        attachmentNames,
+        timeoutMs,
+      },
+    );
+  }
+  return "button-missing";
+}
+
+function buildSendButtonExpression(mode: "locate" | "dispatch-click"): string {
+  return `(() => {
     ${buildClickDispatcher()}
+    const MODE = ${JSON.stringify(mode)};
     const selectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
     const isVisible = (node) => {
       if (!(node instanceof HTMLElement)) return false;
@@ -694,71 +790,18 @@ async function attemptSendButton(
     }
     const button = candidates.find((node) => isVisible(node) && isEnabled(node)) || null;
     if (!button) return { status: 'missing' };
+    if (MODE === 'dispatch-click') {
+      dispatchClickSequence(button);
+      return { status: 'clicked' };
+    }
     button.scrollIntoView({ block: 'center', inline: 'center' });
     const rect = button.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       return { status: 'point', x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     }
-    // Last-resort fallback for unusual DOMs where the button is visible but has no useful rect.
-    dispatchClickSequence(button);
-    return { status: 'clicked' };
+    return { status: 'no-rect' };
   })()`;
-
-  // Give attachment-bearing submissions more headroom. ChatGPT's chip render can
-  // settle slowly for multi-file uploads, but plain text sends should keep the
-  // shorter historical deadline.
-  const timeoutMs = sendButtonTimeoutMs(attachmentNames, attachmentTimeoutMs);
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (needAttachment) {
-      const ready = await Runtime.evaluate({
-        expression: buildAttachmentReadyExpression(attachmentNames),
-        returnByValue: true,
-      });
-      if (!ready?.result?.value) {
-        await delay(150);
-        continue;
-      }
-    }
-    const { result } = await Runtime.evaluate({ expression: script, returnByValue: true });
-    const value = result.value as
-      | { status?: "clicked" | "missing" | "point"; x?: number; y?: number }
-      | string
-      | undefined;
-    const status = typeof value === "string" ? value : value?.status;
-    if (
-      status === "point" &&
-      typeof value === "object" &&
-      typeof value.x === "number" &&
-      typeof value.y === "number"
-    ) {
-      await clickTrustedPoint(Runtime, Input, value.x, value.y);
-      return true;
-    }
-    if (status === "clicked") {
-      return true;
-    }
-    if (status === "missing") {
-      break;
-    }
-    await delay(100);
-  }
-  if (Array.isArray(attachmentNames) && attachmentNames.length > 0) {
-    throw new BrowserAutomationError(
-      `Attachments never reached a clickable send button after ${Math.ceil(
-        timeoutMs / 1000,
-      )}s; tune --browser-attachment-timeout.`,
-      {
-        stage: "submit-prompt",
-        code: "attachment-send-not-ready",
-        attachmentNames,
-        timeoutMs,
-      },
-    );
-  }
-  return false;
 }
-
 async function clickTrustedPoint(
   Runtime: ChromeClient["Runtime"],
   Input: ChromeClient["Input"],

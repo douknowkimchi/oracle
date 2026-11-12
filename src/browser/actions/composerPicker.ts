@@ -31,7 +31,8 @@ type ComposerPickerFailureReason =
   | "option-not-found"
   | "option-ambiguous"
   | "focus-failed"
-  | "selection-unverified";
+  | "selection-unverified"
+  | "menu-not-closed";
 
 export interface ComposerPickerFailure {
   status: "failed";
@@ -204,27 +205,20 @@ export function buildComposerPickerHelpers(): string {
         containerVisible: container ? pickerVisible(container) : null,
       };
     };
-    // Exact item labels: aria-label, full text, and each leaf text node, so a description
-    // line under the title cannot turn "GPT-6" into a prefix match.
-    const pickerItemLabels = (item) => {
-      const labels = [];
-      const add = (value) => {
-        const text = pickerText(value);
-        if (text && !labels.includes(text)) labels.push(text);
-      };
-      for (const node of item.querySelectorAll('*')) {
-        if (!node.children || node.children.length === 0) add(node.textContent);
-      }
-      add(item.getAttribute('aria-label'));
-      add(item.textContent);
-      return labels;
+    // A row's title is the first rendered line of its text (as Webdex reads connector rows):
+    // inline spans of one title join on that line, a description block starts a new line.
+    // Without layout (no innerText) the whole text is one line and only matches a bare title.
+    const pickerItemTitle = (item) => {
+      const rendered = typeof item.innerText === 'string' ? item.innerText : item.textContent;
+      const firstLine = String(rendered ?? '').split('\\n').map(pickerText).find(Boolean);
+      return firstLine || null;
     };
     const pickerItemChecked = (item) =>
       item.getAttribute('aria-checked') === 'true' || item.getAttribute('data-state') === 'checked';
     const pickerSubmenuItems = (submenu) =>
       Array.from(submenu.querySelectorAll(PICKER_SUBMENU_ITEM_SELECTOR)).map((node) => ({
         node,
-        labels: pickerItemLabels(node),
+        title: pickerItemTitle(node),
         checked: pickerItemChecked(node),
       }));
     // Opens the submenu whose bound layer lists the exact target label. Escape closes
@@ -250,20 +244,18 @@ export function buildComposerPickerHelpers(): string {
           continue;
         }
         const items = pickerSubmenuItems(submenu);
-        const matches = items.filter((item) => item.labels.includes(targetLabel));
+        const matches = items.filter((item) => item.title === targetLabel);
         if (matches.length > 0) {
           return { ...opened, subTrigger, submenu, items, matches, tried };
         }
         tried.push({
           subTrigger: pickerDescribe(subTrigger),
           opened: true,
-          labels: items.map((item) => pickerRedact(item.labels[0] ?? '', 60)),
+          titles: items.map((item) => pickerRedact(item.title ?? '(untitled)', 60)),
         });
         await pickerCloseAll(opened.trigger);
       }
       return { failure: pickerFailure('option-not-found', { tried }), tried };
     };
-    const pickerPrimaryLabel = (item, knownLabel = null) =>
-      knownLabel && item.labels.includes(knownLabel) ? knownLabel : (item.labels[0] ?? null);
   `;
 }

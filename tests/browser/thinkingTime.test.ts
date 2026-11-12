@@ -242,6 +242,14 @@ describe("readEffortSlider", () => {
     expect(dom.menuOpen).toBe(false);
   });
 
+  it("fails when the picker stays open after the read", async () => {
+    const { Runtime } = setup({ escapeIgnored: true });
+
+    await expect(readEffortSlider(Runtime)).resolves.toMatchObject({
+      ok: false,
+      failure: { reason: "menu-not-closed" },
+    });
+  });
   it("returns the structural failure when no composer form is present", async () => {
     const { dom, Runtime } = setup();
     dom.editor.attached = false;

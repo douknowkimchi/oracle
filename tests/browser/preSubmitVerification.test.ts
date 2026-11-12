@@ -28,7 +28,7 @@ function setup(options: FakePickerOptions = {}) {
   const dom = new FakePickerDom({
     checkedModel: "GPT-6",
     effort: { min: "0", max: "4", value: "4" },
-    deepResearchToken: "attribute",
+    deepResearchToken: "pill",
     prompt: "Research the market.",
     ...options,
   });
@@ -66,32 +66,47 @@ describe("resolvePreSubmitPlan", () => {
   };
 
   it("verifies exact submenu models, effort and Deep Research", () => {
-    expect(
-      resolvePreSubmitPlan(base, { requestedModel: "gpt-6", resumingConversation: false }),
-    ).toEqual(PLAN);
+    expect(resolvePreSubmitPlan(base, { requestedModel: "gpt-6" })).toEqual(PLAN);
   });
 
   it("keeps plain runs without explicit selections unchanged", () => {
     expect(
       resolvePreSubmitPlan(
         { ...base, desiredModel: "Pro", thinkingTime: undefined, researchMode: "off" },
-        { resumingConversation: false },
+        {},
       ),
     ).toBeNull();
   });
 
-  it("does not verify models outside the current submenu or skipped pickers", () => {
-    expect(
-      resolvePreSubmitPlan({ ...base, desiredModel: "Pro" }, { resumingConversation: false })
-        ?.modelLabel,
-    ).toBeNull();
-    expect(
-      resolvePreSubmitPlan({ ...base, modelStrategy: "current" }, { resumingConversation: false })
-        ?.modelLabel,
-    ).toBeNull();
-    expect(resolvePreSubmitPlan(base, { resumingConversation: true })?.modelLabel).toBeNull();
+  it("reports a model only when the final check re-reads it", () => {
+    const legacy = resolvePreSubmitPlan(
+      { ...base, desiredModel: "Pro" },
+      { requestedModel: "gpt-5.5-pro" },
+    );
+    expect(legacy).toMatchObject({ modelLabel: null, requestedModel: null });
+    for (const modelStrategy of ["current", "ignore"] as const) {
+      expect(
+        resolvePreSubmitPlan({ ...base, modelStrategy }, { requestedModel: "gpt-6" }),
+      ).toMatchObject({ modelLabel: null, requestedModel: null });
+    }
   });
-
+  it("still verifies the model of a resumed conversation", async () => {
+    // Resumed conversations skip selection, but the plan still re-reads the checked row.
+    expect(resolvePreSubmitPlan(base, { requestedModel: "gpt-6" })).toMatchObject({
+      modelLabel: "GPT-6",
+      requestedModel: "gpt-6",
+    });
+    const { Runtime, logger } = setup({ checkedModel: "GPT-5.6 Sol" });
+    const evidence = await verificationFailure(
+      verifyComposerBeforeSubmit(
+        Runtime,
+        resolvePreSubmitPlan(base, { requestedModel: "gpt-6" }) as PreSubmitPlan,
+        { attachmentCount: 0 },
+        logger,
+      ),
+    );
+    expect(evidence).toMatchObject({ requestedModel: "gpt-6", modelChecked: false });
+  });
   it("always plans a check for stop-before-submit runs", () => {
     expect(
       resolvePreSubmitPlan(
@@ -102,7 +117,7 @@ describe("resolvePreSubmitPlan", () => {
           researchMode: "off",
           stopBeforeSubmit: true,
         },
-        { resumingConversation: false },
+        {},
       ),
     ).toMatchObject({ stopBeforeSubmit: true, modelLabel: null, requestedEffort: null });
   });
@@ -115,7 +130,7 @@ describe("verifyComposerBeforeSubmit", () => {
     const evidence = await verifyComposerBeforeSubmit(
       Runtime,
       PLAN,
-      { attachmentCount: 0, prompt: "Research the market." },
+      { attachmentCount: 0 },
       logger,
     );
 
@@ -144,7 +159,7 @@ describe("verifyComposerBeforeSubmit", () => {
     const { Runtime, logger } = setup({ checkedModel: "GPT-5.6 Sol" });
 
     const evidence = await verificationFailure(
-      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0, prompt: "x" }, logger),
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
     );
 
     expect(evidence).toMatchObject({ modelChecked: false, resolvedModelLabel: "GPT-5.6 Sol" });
@@ -155,7 +170,7 @@ describe("verifyComposerBeforeSubmit", () => {
     const { Runtime, logger } = setup({ effort: { min: "0", max: "4", value: "3" } });
 
     const evidence = await verificationFailure(
-      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0, prompt: "x" }, logger),
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
     );
 
     expect(evidence).toMatchObject({ observedEffortIndex: 3, observedEffortLabel: "Extra High" });
@@ -168,7 +183,7 @@ describe("verifyComposerBeforeSubmit", () => {
     const { Runtime, logger } = setup({ effort: { min: "0", max: "3", value: "3" } });
 
     const evidence = await verificationFailure(
-      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0, prompt: "x" }, logger),
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
     );
 
     expect(evidence).toMatchObject({ effortRangeMin: 0, effortRangeMax: 3 });
@@ -179,7 +194,7 @@ describe("verifyComposerBeforeSubmit", () => {
     const { Runtime, logger } = setup({ sliderAlwaysDisabled: true });
 
     const evidence = await verificationFailure(
-      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0, prompt: "x" }, logger),
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
     );
 
     expect(evidence.mismatches.join(" ")).toMatch(/disabled/);
@@ -189,40 +204,95 @@ describe("verifyComposerBeforeSubmit", () => {
     const { Runtime, logger } = setup({ deepResearchToken: "none" });
 
     const evidence = await verificationFailure(
-      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 1, prompt: "x" }, logger),
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 1 }, logger),
     );
 
     expect(evidence).toMatchObject({ deepResearchTokenPresent: false, attachmentCount: 1 });
   });
 
-  it("counts a non-editable token chip but not the same text typed in the prompt", async () => {
-    const chip = setup({ deepResearchToken: "chip" });
-    await expect(
-      verifyComposerBeforeSubmit(
-        chip.Runtime,
-        PLAN,
-        { attachmentCount: 0, prompt: "x" },
-        chip.logger,
-      ),
-    ).resolves.toMatchObject({ deepResearchTokenPresent: true });
+  it.each(["prompt-link", "prompt-attribute"] as const)(
+    "does not accept a token that only appears in the editable prompt (%s)",
+    async (deepResearchToken) => {
+      const { Runtime, logger, logs } = setup({ deepResearchToken });
 
+      const evidence = await verificationFailure(
+        verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
+      );
+
+      expect(evidence.deepResearchTokenPresent).toBe(false);
+      const diagnostic = logs.find((line) => line.includes("Deep Research token diagnostic"));
+      expect(diagnostic).toBeDefined();
+      expect(diagnostic).toMatch(
+        deepResearchToken === "prompt-link"
+          ? /"reason":"inside-link"/
+          : /"reason":"editable-content"/,
+      );
+      expect(diagnostic).toContain('"insideEditable":true');
+    },
+  );
+
+  it.each(["chip", "pill", "chip-and-link"] as const)(
+    "accepts a connector chip in the composer (%s)",
+    async (deepResearchToken) => {
+      const { Runtime, logger, logs } = setup({ deepResearchToken });
+
+      await expect(
+        verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
+      ).resolves.toMatchObject({ deepResearchTokenPresent: true, verified: true });
+      expect(logs.join("\n")).toContain('"reason":"connector-chip"');
+    },
+  );
+
+  it("does not accept the token as plain prompt text", async () => {
     const typed = "see app://connector_openai_deep_research";
-    const promptOnly = setup({ deepResearchToken: "none", prompt: typed });
+    const { Runtime, logger } = setup({ deepResearchToken: "none", prompt: typed });
+
     await verificationFailure(
-      verifyComposerBeforeSubmit(
-        promptOnly.Runtime,
-        PLAN,
-        { attachmentCount: 0, prompt: typed },
-        promptOnly.logger,
-      ),
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
     );
   });
 
+  it("fails when a model or effort read cannot close the picker", async () => {
+    const { dom, Runtime, logger } = setup({ escapeIgnored: true });
+
+    const evidence = await verificationFailure(
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
+    );
+
+    expect(evidence.mismatches.join(" ")).toMatch(/menu-not-closed/);
+    expect(dom.menuOpen).toBe(true);
+  });
+
+  it("records the observed title, not the requested label", async () => {
+    // Title "GPT-6 mini" with a description line that reads "GPT-6".
+    const { Runtime, logger } = setup({
+      models: [{ label: "GPT-6 mini", description: "GPT-6" }, { label: "GPT-5.6 Sol" }],
+      checkedModel: "GPT-6 mini",
+    });
+
+    const evidence = await verificationFailure(
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
+    );
+
+    expect(evidence).toMatchObject({ modelChecked: false, resolvedModelLabel: null });
+    expect(evidence.mismatches[0]).toMatch(/option-not-found/);
+  });
+
+  it("reads a title split across inline spans as one title", async () => {
+    const { Runtime, logger } = setup({
+      models: [{ label: "GPT-6", titleParts: ["GPT-", "6"], description: "Newest" }],
+      checkedModel: "GPT-6",
+    });
+
+    await expect(
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
+    ).resolves.toMatchObject({ resolvedModelLabel: "GPT-6", modelChecked: true });
+  });
   it("fails when the picker menu cannot be bound", async () => {
     const { Runtime, logger, logs } = setup({ unboundMenu: true });
 
     const evidence = await verificationFailure(
-      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0, prompt: "x" }, logger),
+      verifyComposerBeforeSubmit(Runtime, PLAN, { attachmentCount: 0 }, logger),
     );
 
     expect(evidence.mismatches.join(" ")).toMatch(/menu-not-bound/);
@@ -270,7 +340,7 @@ describe("submitPrompt with the pre-submit gate", () => {
         runtime: runtime as never,
         input: input as never,
         onPromptSubmitted,
-        beforeSend: gate.beforeSend({ attachmentCount: 0, prompt }),
+        beforeSend: gate.beforeSend({ attachmentCount: 0 }),
       },
       prompt,
       logger,
@@ -297,7 +367,7 @@ describe("submitPrompt with the pre-submit gate", () => {
           runtime: runtime as never,
           input: input as never,
           onPromptSubmitted,
-          beforeSend: gate.beforeSend({ attachmentCount: 0, prompt }),
+          beforeSend: gate.beforeSend({ attachmentCount: 0 }),
         },
         prompt,
         logger,
@@ -317,7 +387,7 @@ describe("submitPrompt with the pre-submit gate", () => {
       onVerified: (evidence) => order.push(`verified:${evidence.verified}`),
     });
 
-    const decision = await gate.beforeSend({ attachmentCount: 0, prompt })();
+    const decision = await gate.beforeSend({ attachmentCount: 0 })();
     order.push(`decision:${decision}`);
 
     expect(order).toEqual(["verified:true", "decision:send"]);
@@ -328,7 +398,7 @@ describe("submitPrompt with the pre-submit gate", () => {
     const onVerified = vi.fn();
     const gate = createPreSubmitGate(dom.cdp().Runtime as never, PLAN, logger, { onVerified });
 
-    await verificationFailure(gate.beforeSend({ attachmentCount: 0, prompt })());
+    await verificationFailure(gate.beforeSend({ attachmentCount: 0 })());
 
     expect(onVerified).not.toHaveBeenCalled();
   });
@@ -337,7 +407,7 @@ describe("submitPrompt with the pre-submit gate", () => {
     const { dom, logger } = setup();
     const gate = createPreSubmitGate(dom.cdp().Runtime as never, PLAN, logger);
 
-    await expect(gate.beforeSend({ attachmentCount: 0, prompt })()).resolves.toBe("send");
+    await expect(gate.beforeSend({ attachmentCount: 0 })()).resolves.toBe("send");
     expect(gate.stopped).toBe(false);
     expect(gate.evidence?.verified).toBe(true);
   });
@@ -353,8 +423,7 @@ describe("clearComposerAfterStop", () => {
               value: {
                 composerFound: true,
                 present: true,
-                locations: ["span[data-href]"],
-                outsideComposer: 0,
+                occurrences: [{ tag: "span", accepted: true, reason: "connector-chip" }],
               },
             },
           };
@@ -366,7 +435,6 @@ describe("clearComposerAfterStop", () => {
 
     const warnings = await clearComposerAfterStop(runtime as never, logger, {
       attachmentCount: 0,
-      prompt: "draft",
     });
 
     expect(warnings.map((warning) => warning.code)).toEqual([
@@ -410,7 +478,7 @@ describe("selection failures before send", () => {
           {
             runtime: submitRuntime as never,
             input: input as never,
-            beforeSend: gate.beforeSend({ attachmentCount, prompt }),
+            beforeSend: gate.beforeSend({ attachmentCount }),
           },
           prompt,
           (() => undefined) as unknown as BrowserLogger,
@@ -517,7 +585,7 @@ describe("selection failures before send", () => {
   it("adds no evidence once the gate has decided to send", async () => {
     const { Runtime, logger } = setup();
     const gate = createPreSubmitGate(Runtime, PLAN, logger);
-    await expect(gate.beforeSend({ attachmentCount: 0, prompt })()).resolves.toBe("send");
+    await expect(gate.beforeSend({ attachmentCount: 0 })()).resolves.toBe("send");
     const original = new BrowserAutomationError("Deep Research pill did not appear", {
       stage: "deep-research-activate",
     });
@@ -555,5 +623,207 @@ describe("selection failures before send", () => {
         throw original;
       }),
     ).rejects.toBe(original);
+  });
+});
+
+describe("final check at the send boundary", () => {
+  const prompt = "Research the market.";
+  const SENT = new Error("sent");
+
+  /**
+   * Runtime that serves picker reads from the fake DOM and scripts attachment readiness and the
+   * send-button lookup, recording the order of checks, lookups and send input.
+   */
+  function boundaryRuntime(
+    dom: FakePickerDom,
+    script: {
+      attachmentReady?: (poll: number) => boolean;
+      locate?: (lookup: number) => { status: string; x?: number; y?: number };
+    },
+  ) {
+    const events: string[] = [];
+    let attachmentPolls = 0;
+    let lookups = 0;
+    const runtime = {
+      evaluate: vi.fn(async ({ expression }: { expression: string }) => {
+        if (expression.includes("pickerComposerForm")) {
+          if (expression.includes("CHIP_SELECTOR")) events.push("check");
+          return { result: { value: await dom.evaluate(expression) } };
+        }
+        if (expression.includes("document.readyState === 'complete'")) {
+          return { result: { value: { ready: true, composer: true } } };
+        }
+        if (expression.includes("focusNode")) return { result: { value: { focused: true } } };
+        if (expression.includes("const expected =")) {
+          attachmentPolls += 1;
+          const ready = script.attachmentReady?.(attachmentPolls) ?? true;
+          events.push(`attachments:${ready}`);
+          return { result: { value: ready } };
+        }
+        if (expression.includes("button.scrollIntoView")) {
+          lookups += 1;
+          const value = script.locate?.(lookups) ?? { status: "point", x: 5, y: 6 };
+          events.push(`locate:${value.status}`);
+          return { result: { value } };
+        }
+        return {
+          result: { value: { editorText: prompt, fallbackValue: "", activeValue: prompt } },
+        };
+      }),
+    };
+    const input = {
+      insertText: vi.fn(async () => undefined),
+      dispatchKeyEvent: vi.fn(async ({ type }: { type: string }) => {
+        events.push(`key:${type}`);
+      }),
+      dispatchMouseEvent: vi.fn(async ({ type }: { type: string }) => {
+        events.push(`mouse:${type}`);
+      }),
+    };
+    return { runtime, input, events };
+  }
+
+  async function submitWithGate(
+    dom: FakePickerDom,
+    plan: PreSubmitPlan,
+    script: Parameters<typeof boundaryRuntime>[1],
+    attachmentNames: string[] = [],
+  ) {
+    const { logger } = setup();
+    const { runtime, input, events } = boundaryRuntime(dom, script);
+    const gate = createPreSubmitGate(runtime as never, plan, logger);
+    const outcome = await submitPrompt(
+      {
+        runtime: runtime as never,
+        input: input as never,
+        attachmentNames,
+        beforeSend: gate.beforeSend({ attachmentCount: attachmentNames.length }),
+        onPromptSubmitted: () => {
+          throw SENT;
+        },
+      },
+      prompt,
+      logger,
+    ).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    return { outcome, input, events, gate };
+  }
+
+  const pickerDom = (options: FakePickerOptions = {}) =>
+    new FakePickerDom({
+      checkedModel: "GPT-6",
+      effort: { min: "0", max: "4", value: "4" },
+      deepResearchToken: "chip",
+      ...options,
+    });
+
+  it("checks after the attachment wait, so a change during the wait blocks the send", async () => {
+    const dom = pickerDom();
+    const { outcome, input } = await submitWithGate(
+      dom,
+      PLAN,
+      {
+        attachmentReady: (poll) => {
+          if (poll === 2) dom.slider?.setAttribute("aria-valuenow", "3");
+          return poll >= 3;
+        },
+      },
+      ["report.pdf"],
+    );
+
+    const evidence = await verificationFailure(
+      Promise.reject((outcome as { error: unknown }).error),
+    );
+    expect(evidence).toMatchObject({ verified: false, observedEffortIndex: 3 });
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+    expect(input.dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
+  it("checks after the button is ready and clicks right after a fresh lookup", async () => {
+    const { outcome, events } = await submitWithGate(pickerDom(), PLAN, {}, ["report.pdf"]);
+
+    expect(outcome).toEqual({ error: SENT });
+    expect(events).toEqual([
+      "attachments:true",
+      "locate:point",
+      "check",
+      "attachments:true",
+      "locate:point",
+      "mouse:mouseMoved",
+      "mouse:mousePressed",
+      "mouse:mouseReleased",
+    ]);
+  });
+
+  it("runs the check again when the button disappears after a check", async () => {
+    const { outcome, events } = await submitWithGate(pickerDom(), PLAN, {
+      locate: (lookup) => (lookup === 2 ? { status: "missing" } : { status: "point", x: 5, y: 6 }),
+    });
+
+    expect(outcome).toEqual({ error: SENT });
+    expect(events.filter((event) => event === "check")).toHaveLength(2);
+    expect(events.indexOf("mouse:mousePressed")).toBeGreaterThan(events.lastIndexOf("check"));
+  });
+
+  it("stops at the send boundary once the button is ready", async () => {
+    const { outcome, input, events, gate } = await submitWithGate(
+      pickerDom(),
+      {
+        ...PLAN,
+        stopBeforeSubmit: true,
+      },
+      {},
+    );
+
+    expect(outcome).toEqual({ value: null });
+    expect(gate.stopped).toBe(true);
+    expect(events).toEqual(["locate:point", "check"]);
+    expect(input.dispatchMouseEvent).not.toHaveBeenCalled();
+  });
+
+  it("checks right before the Enter fallback and never presses Enter on a mismatch", async () => {
+    const mismatch = await submitWithGate(pickerDom({ checkedModel: "GPT-5.6 Sol" }), PLAN, {
+      locate: () => ({ status: "missing" }),
+    });
+    await verificationFailure(Promise.reject((mismatch.outcome as { error: unknown }).error));
+    expect(mismatch.input.dispatchKeyEvent).not.toHaveBeenCalled();
+
+    const passing = await submitWithGate(pickerDom(), PLAN, {
+      locate: () => ({ status: "missing" }),
+    });
+    expect(passing.outcome).toEqual({ error: SENT });
+    expect(passing.events.slice(-3)).toEqual(["check", "key:keyDown", "key:keyUp"]);
+  });
+});
+
+describe("later submissions in the same run", () => {
+  it("blocks a mismatched follow-up without replacing the first evidence or claiming nothing was sent", async () => {
+    const { dom, Runtime, logger } = setup();
+    const onVerified = vi.fn();
+    const gate = createPreSubmitGate(Runtime, PLAN, logger, { onVerified });
+    await expect(gate.beforeSend({ attachmentCount: 0 })()).resolves.toBe("send");
+    const firstEvidence = gate.evidence;
+    dom.clickModel(dom.modelItems[1], "GPT-5.6 Sol");
+
+    const error = await gate
+      .beforeSend({ attachmentCount: 0 })()
+      .then(
+        () => {
+          throw new Error("expected the follow-up check to fail");
+        },
+        (caught: unknown) => caught,
+      );
+
+    expect(error).toBeInstanceOf(BrowserAutomationError);
+    const failure = error as BrowserAutomationError;
+    expect(failure.message).not.toMatch(/nothing was sent/i);
+    expect(failure.message).toMatch(/earlier prompt in this run had already reached the send step/);
+    expect(failure.details).toMatchObject({ stage: "later-submission-verification" });
+    expect(failure.details).not.toHaveProperty("preSubmitVerification");
+    expect(gate.evidence).toBe(firstEvidence);
+    expect(gate.evidence?.verified).toBe(true);
+    expect(onVerified).toHaveBeenCalledTimes(1);
   });
 });

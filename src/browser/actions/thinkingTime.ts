@@ -287,7 +287,7 @@ function buildEffortSliderExpression(operation: SliderOperation): string {
       const trigger = pickerTrigger(composer.form);
       if (!trigger) return pickerFailure('trigger-not-found');
       if (!(await pickerCloseAll(trigger))) {
-        return pickerFailure('menu-not-bound', { stillOpen: pickerDescribe(trigger) });
+        return pickerFailure('menu-not-closed', { trigger: pickerDescribe(trigger) });
       }
       return { status: 'closed' };
     }
@@ -322,8 +322,9 @@ function buildEffortSliderExpression(operation: SliderOperation): string {
       }
       return { status: 'ok', ...state, focused: true };
     }
-    if (OPERATION === 'read-and-close') {
-      await pickerCloseAll(opened.trigger);
+    if (OPERATION === 'read-and-close' && !(await pickerCloseAll(opened.trigger))) {
+      // An open picker can swallow the later send click; an unclosed read is not evidence.
+      return pickerFailure('menu-not-closed', { trigger: pickerDescribe(opened.trigger) });
     }
     return { status: 'ok', ...state };
   })()`;

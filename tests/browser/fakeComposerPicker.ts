@@ -31,6 +31,15 @@ export class FakeElement {
     return this;
   }
 
+  /** Rendered text: block children (div, p) start their own line, inline spans join. */
+  get innerText(): string {
+    const parts = [this.ownText];
+    for (const child of this.children) {
+      parts.push(BLOCK_TAGS.has(child.tagName) ? `\n${child.innerText}\n` : child.innerText);
+    }
+    return parts.join("").replace(/\n+/g, "\n");
+  }
+
   get textContent(): string {
     return this.ownText + this.children.map((child) => child.textContent).join("");
   }
@@ -121,6 +130,8 @@ export class FakeElement {
   }
 }
 
+const BLOCK_TAGS = new Set(["div", "p", "li"]);
+
 function matchesSelector(node: FakeElement, selector: string): boolean {
   return selector.split(",").some((part) => matchesCompound(node, part.trim()));
 }
@@ -158,7 +169,8 @@ function matchesCompound(node: FakeElement, compound: string): boolean {
 }
 
 export interface FakePickerOptions {
-  models?: Array<{ label: string; description?: string }>;
+  /** Row title (split into inline spans when titleParts is set) plus an optional description line. */
+  models?: Array<{ label: string; titleParts?: string[]; description?: string }>;
   checkedModel?: string | null;
   effort?: { min: string; max: string; value: string } | null;
   /** Key presses move the slider by this many steps (0 simulates an ignored key). */
@@ -169,7 +181,18 @@ export interface FakePickerOptions {
   modelClickIgnored?: boolean;
   /** Slider stays disabled even when the model submenu is closed. */
   sliderAlwaysDisabled?: boolean;
-  deepResearchToken?: "attribute" | "chip" | "none";
+  /**
+   * pill: connector chip outside the editor; chip: non-editable connector chip inside the editor;
+   * prompt-link: only a link typed in the prompt; prompt-attribute: only an editable node carrying
+   * the URI in an attribute; chip-and-link: chip plus a prompt link.
+   */
+  deepResearchToken?:
+    | "pill"
+    | "chip"
+    | "prompt-link"
+    | "prompt-attribute"
+    | "chip-and-link"
+    | "none";
   prompt?: string;
   /** Escape leaves the trigger expanded (stuck menu). */
   escapeIgnored?: boolean;
@@ -217,18 +240,20 @@ export class FakePickerDom {
     );
     this.sendButton = el("button", { "data-testid": "send-button" }, "Send");
     this.form.append(this.editor, this.trigger, this.sendButton);
-    if (options.deepResearchToken === "attribute") {
-      this.form.append(
-        el(
-          "span",
-          { "data-href": "app://connector_openai_deep_research", class: "__composer-pill" },
-          "Deep research",
-        ),
-      );
-    } else if (options.deepResearchToken === "chip") {
-      this.editor.append(
-        el("span", { contenteditable: "false" }, "app://connector_openai_deep_research"),
-      );
+    const token = "app://connector_openai_deep_research";
+    const chipAttrs = { "data-id": `plugin:${token}`, "data-keyword": "Deep research" };
+    const mode = options.deepResearchToken;
+    if (mode === "pill") {
+      this.form.append(el("span", chipAttrs, "Deep research"));
+    }
+    if (mode === "chip" || mode === "chip-and-link") {
+      this.editor.append(el("span", { ...chipAttrs, contenteditable: "false" }, "Deep research"));
+    }
+    if (mode === "prompt-link" || mode === "chip-and-link") {
+      this.editor.append(el("a", { href: token }, token));
+    }
+    if (mode === "prompt-attribute") {
+      this.editor.append(el("span", { "data-id": `plugin:${token}` }, "typed"));
     }
     this.portal = el("div");
     this.menu = el("div", {
@@ -268,8 +293,8 @@ export class FakePickerDom {
         role: "menuitemradio",
         "aria-checked": model.label === options.checkedModel ? "true" : "false",
       });
-      item.append(el("span", {}, model.label));
-      if (model.description) item.append(el("span", {}, model.description));
+      for (const part of model.titleParts ?? [model.label]) item.append(el("span", {}, part));
+      if (model.description) item.append(el("div", {}, model.description));
       item.addEventListener("click", () => this.clickModel(item, model.label));
       this.modelItems.push(item);
       this.submenu.append(item);
@@ -359,7 +384,7 @@ export class FakePickerDom {
   checkedModels(): string[] {
     return this.modelItems
       .filter((item) => item.getAttribute("aria-checked") === "true")
-      .map((item) => item.children[0]?.textContent ?? "");
+      .map((item) => item.innerText.split("\n")[0] ?? "");
   }
 
   /** CDP Input.dispatchKeyEvent stand-in: arrow keys move the slider when its row has focus. */
