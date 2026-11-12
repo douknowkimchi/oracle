@@ -75,8 +75,10 @@ export interface BrowserSessionConfig {
   manualLoginCookieSync?: boolean;
   /** Copy this signed-in Chrome user-data dir to a throwaway profile and run against it (login-free). */
   copyProfileSource?: string | null;
-  /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
+  /** Composer effort slider level: instant, medium, high, extra-high, pro (index 0..4). */
   thinkingTime?: ThinkingTimeLevel;
+  /** Run every selection and the final pre-submit check, then stop without sending. */
+  stopBeforeSubmit?: boolean;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;
   /** Archive completed ChatGPT conversations after local artifacts are saved. */
@@ -135,6 +137,29 @@ export interface BrowserModelSelectionEvidence {
   capturedAt: string;
 }
 
+/**
+ * Final composer check captured immediately before send (or before stopping when
+ * --browser-stop-before-submit is set). Null fields were not requested or not observable.
+ */
+export interface BrowserPreSubmitVerification {
+  requestedModel: string | null;
+  resolvedModelLabel: string | null;
+  modelChecked: boolean;
+  requestedEffort: ThinkingTimeLevel | null;
+  observedEffortIndex: number | null;
+  observedEffortLabel: string | null;
+  effortRangeMin: number | null;
+  effortRangeMax: number | null;
+  deepResearchRequested: boolean;
+  deepResearchTokenPresent: boolean;
+  attachmentCount: number;
+  verified: boolean;
+  stoppedBeforeSubmit: boolean;
+  /** Human-readable reasons when verified is false; empty when verified. */
+  mismatches: string[];
+  capturedAt: string;
+}
+
 export interface BrowserRunWarning {
   code: string;
   severity: "warning";
@@ -148,6 +173,7 @@ export interface BrowserMetadata {
   harvest?: BrowserHarvestMetadata;
   archive?: BrowserArchiveResult;
   modelSelection?: BrowserModelSelectionEvidence;
+  preSubmitVerification?: BrowserPreSubmitVerification;
   warnings?: BrowserRunWarning[];
 }
 

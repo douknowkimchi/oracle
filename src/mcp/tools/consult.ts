@@ -34,6 +34,7 @@ import { loadUserConfig, type UserConfig } from "../../config.js";
 import { resolveNotificationSettings } from "../../cli/notifier.js";
 import { mapModelToBrowserLabel, resolveBrowserModelLabel } from "../../cli/browserConfig.js";
 import type { BrowserModelStrategy } from "../../browser/types.js";
+import type { ThinkingTimeLevel } from "../../oracle/types.js";
 import { normalizeThinkingTimeLevel } from "../../oracle/thinkingTime.js";
 
 // Use raw shapes so the MCP SDK (with its bundled Zod) wraps them and emits valid JSON Schema.
@@ -91,7 +92,9 @@ const consultInputShape = {
     ),
   browserThinkingTime: browserThinkingTimeRawSchema
     .optional()
-    .describe("Browser-only: set ChatGPT thinking time when supported by the chosen model."),
+    .describe(
+      "Browser-only: set the ChatGPT effort slider: instant, medium, high, extra-high, or pro (legacy light/standard/extended/heavy are accepted).",
+    ),
   browserModelStrategy: z
     .enum(["select", "current", "ignore"])
     .optional()
@@ -328,7 +331,7 @@ export function buildConsultBrowserConfig({
   runModel: string;
   inputModel?: string;
   browserModelLabel?: string;
-  browserThinkingTime?: "light" | "standard" | "extended" | "heavy";
+  browserThinkingTime?: ThinkingTimeLevel;
   browserModelStrategy?: BrowserModelStrategy;
   browserResearchMode?: "deep";
   browserArchive?: "auto" | "always" | "never";
@@ -403,9 +406,9 @@ export function buildConsultDryRunResolved({
   }
   const desiredModel = browserConfig?.desiredModel ?? null;
   const thinkingTime = browserConfig?.thinkingTime ?? null;
-  if (runOptions.model === "gpt-5.5-pro" && thinkingTime === "heavy") {
+  if (runOptions.model === "gpt-5.5-pro" && thinkingTime === "extra-high") {
     guidance.push(
-      'gpt-5.5-pro should normally use Pro Extended. Use model:"gpt-5.5" with browserThinkingTime:"heavy" only when you explicitly want Thinking Heavy.',
+      'gpt-5.5-pro should normally use Pro Extended. Use model:"gpt-5.5" with browserThinkingTime:"extra-high" only when you explicitly want Thinking Extra High.',
     );
   }
   const chatgptUrl = browserConfig?.chatgptUrl ?? browserConfig?.url ?? null;

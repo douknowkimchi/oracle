@@ -26,6 +26,7 @@ const DEFAULT_CHROME_PROFILE = "Default";
 // The browser label is passed to the model picker which fuzzy-matches against ChatGPT's UI.
 const BROWSER_MODEL_LABELS: [ModelName, string][] = [
   // Most specific first (e.g., "gpt-5.2-thinking" before "gpt-5.2")
+  ["gpt-6", "GPT-6"],
   ["gpt-5.6-sol", "GPT-5.6 Sol"],
   ["gpt-5.6", "GPT-5.6 Sol"],
   ["gpt-5.5-pro", "Pro"],
@@ -79,8 +80,9 @@ export interface BrowserFlagOptions {
   browserManualLoginProfileDir?: string | null;
   copyProfile?: string;
   remoteHost?: string;
-  /** Thinking time intensity: 'light', 'standard', 'extended', 'heavy' */
+  /** Composer effort slider level: instant, medium, high, extra-high, pro. */
   browserThinkingTime?: ThinkingTimeLevel;
+  browserStopBeforeSubmit?: boolean;
   browserResearch?: BrowserResearchMode;
   browserArchive?: BrowserArchiveMode;
   browserModelLabel?: string;
@@ -100,6 +102,7 @@ export function normalizeChatGptModelForBrowser(model: ModelName): ModelName {
   }
 
   if (
+    normalized === "gpt-6" ||
     normalized === "gpt-5.6-sol" ||
     normalized === "gpt-5.6" ||
     normalized === "gpt-5.5-pro" ||
@@ -149,6 +152,11 @@ export async function buildBrowserConfig(
   if (options.copyProfile && options.remoteChrome) {
     throw new Error(
       "--copy-profile cannot be combined with --remote-chrome: copied profiles require a locally launched Chrome instance.",
+    );
+  }
+  if (options.browserStopBeforeSubmit && options.remoteHost) {
+    throw new Error(
+      "--browser-stop-before-submit cannot be combined with --remote-host: the remote browser service does not return pre-submit evidence.",
     );
   }
   if (options.copyProfile && options.remoteHost) {
@@ -257,6 +265,7 @@ export async function buildBrowserConfig(
     remoteChrome,
     browserTabRef: options.browserTab ?? undefined,
     thinkingTime: normalizeThinkingTimeLevel(options.browserThinkingTime) ?? undefined,
+    stopBeforeSubmit: options.browserStopBeforeSubmit ? true : undefined,
     researchMode: options.browserResearch === "deep" ? "deep" : "off",
     archiveConversations: options.browserArchive,
   };

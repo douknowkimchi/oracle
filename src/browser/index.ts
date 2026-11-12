@@ -47,6 +47,11 @@ import {
 import { INPUT_SELECTORS } from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
 import { ensureThinkingTime } from "./actions/thinkingTime.js";
+import {
+  clearComposerAfterStop,
+  createPreSubmitGate,
+  resolvePreSubmitPlan,
+} from "./actions/preSubmitVerification.js";
 import { startThinkingStatusMonitor } from "./actions/thinkingStatus.js";
 import {
   activateDeepResearch,
@@ -56,7 +61,11 @@ import {
 } from "./actions/deepResearch.js";
 import { estimateTokenCount, withRetries, delay } from "./utils.js";
 import { formatElapsed } from "../oracle/format.js";
-import type { BrowserModelSelectionEvidence } from "../sessionStore.js";
+import type {
+  BrowserModelSelectionEvidence,
+  BrowserPreSubmitVerification,
+  BrowserRunWarning,
+} from "../sessionStore.js";
 import { CHATGPT_URL, DEFAULT_MODEL_STRATEGY } from "./constants.js";
 import type { LaunchedChrome } from "chrome-launcher";
 import { BrowserAutomationError } from "../oracle/errors.js";
@@ -198,6 +207,21 @@ export function classifyPreservedBrowserErrorForTest(
 // effort. This is wrong for lower-tier plans ($100/mo Pro) where selecting "Pro"
 // defaults to Standard effort. ensureThinkingTime() already handles the
 // "already-selected" case as a no-op, so always attempting it is safe.
+
+type BrowserConfigWithThinkingTime = Pick<
+  ResolvedBrowserConfig,
+  "researchMode" | "thinkingTime"
+> & {
+  thinkingTime: NonNullable<ResolvedBrowserConfig["thinkingTime"]>;
+};
+
+function shouldApplyThinkingTimeSelection(
+  config: Pick<ResolvedBrowserConfig, "researchMode" | "thinkingTime">,
+): config is BrowserConfigWithThinkingTime {
+  // Deep Research uses the same effort picker, so research mode must not
+  // suppress an explicitly configured thinking-time selection.
+  return config.thinkingTime !== undefined;
+}
 
 type ChatGptUiWarningType = "rate_limit" | "temporary_unavailable" | "auth_or_challenge";
 
@@ -727,9 +751,41 @@ export function maybeArchiveCompletedConversationForTest(
 type BrowserSubmissionResult = {
   baselineTurns: number | null;
   baselineAssistantText: string | null;
+  /** True when --browser-stop-before-submit ended the submission before send. */
+  stoppedBeforeSubmit?: boolean;
+  stopCleanupWarnings?: BrowserRunWarning[];
   deepResearchTargetKeys?: string[];
   deepResearchTargetBaselineCaptured?: boolean;
 };
+
+/** Result for a --browser-stop-before-submit run: verified, composer cleared, nothing sent. */
+function buildStoppedBeforeSubmitResult(args: {
+  startedAt: number;
+  modelSelection?: BrowserModelSelectionEvidence;
+  preSubmitVerification?: BrowserPreSubmitVerification;
+  warnings?: BrowserRunWarning[];
+  runtime: Pick<
+    BrowserRunResult,
+    "chromePid" | "chromePort" | "chromeHost" | "userDataDir" | "chromeTargetId" | "tabUrl"
+  >;
+}): BrowserRunResult {
+  return {
+    answerText: "",
+    answerMarkdown: "",
+    modelSelection: args.modelSelection,
+    preSubmitVerification: args.preSubmitVerification,
+    warnings: args.warnings && args.warnings.length > 0 ? args.warnings : undefined,
+    tookMs: Date.now() - args.startedAt,
+    answerTokens: 0,
+    answerChars: 0,
+    ...args.runtime,
+    conversationId: args.runtime.tabUrl
+      ? extractConversationIdFromUrl(args.runtime.tabUrl)
+      : undefined,
+    promptSubmitted: false,
+    controllerPid: process.pid,
+  };
+}
 
 async function captureDeepResearchTargetBaseline(
   client: ChromeClient,
@@ -1497,24 +1553,28 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       );
     }
     const deepResearch = config.researchMode === "deep";
-    // Handle thinking time selection if specified. Deep Research owns its own effort flow.
-    const thinkingTime = config.thinkingTime;
-    if (thinkingTime && !deepResearch) {
-      const thinkingTargetModel = modelStrategy === "select" ? config.desiredModel : null;
+    if (shouldApplyThinkingTimeSelection(config)) {
       await raceWithDisconnect(
-        withRetries(() => ensureThinkingTime(Runtime, thinkingTime, logger, thinkingTargetModel), {
+        withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
           retries: 2,
           delayMs: 300,
           onRetry: (attempt, error) => {
             if (options.verbose) {
               logger(
-                `[retry] Thinking time (${thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+                `[retry] Thinking time (${config.thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
               );
             }
           },
         }),
       );
     }
+    const preSubmitPlan = resolvePreSubmitPlan(config, {
+      requestedModel: options.requestedModel,
+      resumingConversation: isResumingConversation,
+    });
+    const preSubmitGate = preSubmitPlan
+      ? createPreSubmitGate(Runtime, preSubmitPlan, logger)
+      : null;
     const profileLockTimeoutMs = manualLogin ? (config.profileLockTimeoutMs ?? 0) : 0;
     let profileLock: ProfileRunLock | null = null;
     const acquireProfileLockIfNeeded = async () => {
@@ -1605,6 +1665,10 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
         onPromptSubmitted: markPromptSubmitted,
+        beforeSend: preSubmitGate?.beforeSend({
+          attachmentCount: submissionAttachments.length,
+          prompt,
+        }),
       };
       const deepResearchTargetBaseline =
         deepResearch && client
@@ -1617,6 +1681,18 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         log: logger,
         state: providerState,
       });
+      if (preSubmitGate?.stopped) {
+        const stopCleanupWarnings = await clearComposerAfterStop(Runtime, logger, {
+          attachmentCount: submissionAttachments.length,
+          prompt,
+        });
+        return {
+          baselineTurns,
+          baselineAssistantText,
+          stoppedBeforeSubmit: true,
+          stopCleanupWarnings,
+        };
+      }
       await markPromptSubmitted();
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
@@ -1665,6 +1741,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     let baselineAssistantText: string | null = null;
     let deepResearchTargetKeys: string[] = [];
     let deepResearchTargetBaselineCaptured = false;
+    let stoppedSubmission: BrowserSubmissionResult | null = null;
     await acquireProfileLockIfNeeded();
     try {
       const submission = await runSubmissionWithRecovery({
@@ -1684,8 +1761,26 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       baselineAssistantText = submission.baselineAssistantText;
       deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
       deepResearchTargetBaselineCaptured = submission.deepResearchTargetBaselineCaptured ?? false;
+      stoppedSubmission = submission.stoppedBeforeSubmit ? submission : null;
     } finally {
       await releaseProfileLockIfHeld();
+    }
+    if (stoppedSubmission) {
+      runStatus = "complete";
+      return buildStoppedBeforeSubmitResult({
+        startedAt,
+        modelSelection: modelSelectionEvidence,
+        preSubmitVerification: preSubmitGate?.evidence,
+        warnings: stoppedSubmission.stopCleanupWarnings,
+        runtime: {
+          chromePid: chrome.pid,
+          chromePort: chrome.port,
+          chromeHost,
+          userDataDir,
+          chromeTargetId: lastTargetId,
+          tabUrl: lastUrl,
+        },
+      });
     }
     const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
@@ -1746,6 +1841,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         artifacts: savedArtifacts,
         archive,
         modelSelection: modelSelectionEvidence,
+        preSubmitVerification: preSubmitGate?.evidence,
         tookMs: durationMs,
         answerTokens: tokens,
         answerChars: researchResult.text.length,
@@ -2256,6 +2352,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
       savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
+      preSubmitVerification: preSubmitGate?.evidence,
       tookMs: durationMs,
       answerTokens,
       answerChars,
@@ -3095,25 +3192,26 @@ async function runRemoteBrowserMode(
       );
     }
     const deepResearch = config.researchMode === "deep";
-    // Handle thinking time selection if specified. Deep Research owns its own effort flow.
-    const thinkingTime = config.thinkingTime;
-    if (thinkingTime && !deepResearch) {
-      const thinkingTargetModel = modelStrategy === "select" ? config.desiredModel : null;
-      await withRetries(
-        () => ensureThinkingTime(Runtime, thinkingTime, logger, thinkingTargetModel),
-        {
-          retries: 2,
-          delayMs: 300,
-          onRetry: (attempt, error) => {
-            if (options.verbose) {
-              logger(
-                `[retry] Thinking time (${thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
-              );
-            }
-          },
+    if (shouldApplyThinkingTimeSelection(config)) {
+      await withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
+        retries: 2,
+        delayMs: 300,
+        onRetry: (attempt, error) => {
+          if (options.verbose) {
+            logger(
+              `[retry] Thinking time (${config.thinkingTime}) attempt ${attempt + 1}: ${error instanceof Error ? error.message : error}`,
+            );
+          }
         },
-      );
+      });
     }
+    const preSubmitPlan = resolvePreSubmitPlan(config, {
+      requestedModel: options.requestedModel,
+      resumingConversation: Boolean(config.resumeConversationUrl),
+    });
+    const preSubmitGate = preSubmitPlan
+      ? createPreSubmitGate(Runtime, preSubmitPlan, logger)
+      : null;
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);
       const baselineAssistantText =
@@ -3173,6 +3271,10 @@ async function runRemoteBrowserMode(
         baselineTurns: baselineTurns ?? undefined,
         attachmentNames: attachmentExpectations,
         onPromptSubmitted: markPromptSubmitted,
+        beforeSend: preSubmitGate?.beforeSend({
+          attachmentCount: submissionAttachments.length,
+          prompt,
+        }),
       };
       const deepResearchTargetBaseline =
         deepResearch && client
@@ -3185,6 +3287,18 @@ async function runRemoteBrowserMode(
         log: logger,
         state: providerState,
       });
+      if (preSubmitGate?.stopped) {
+        const stopCleanupWarnings = await clearComposerAfterStop(Runtime, logger, {
+          attachmentCount: submissionAttachments.length,
+          prompt,
+        });
+        return {
+          baselineTurns,
+          baselineAssistantText,
+          stoppedBeforeSubmit: true,
+          stopCleanupWarnings,
+        };
+      }
       await markPromptSubmitted();
       const providerBaselineTurns = providerState.baselineTurns;
       if (typeof providerBaselineTurns === "number" && Number.isFinite(providerBaselineTurns)) {
@@ -3223,6 +3337,21 @@ async function runRemoteBrowserMode(
     baselineAssistantText = submission.baselineAssistantText;
     deepResearchTargetKeys = submission.deepResearchTargetKeys ?? [];
     deepResearchTargetBaselineCaptured = submission.deepResearchTargetBaselineCaptured ?? false;
+    if (submission.stoppedBeforeSubmit) {
+      runStatus = "complete";
+      return buildStoppedBeforeSubmitResult({
+        startedAt,
+        modelSelection: modelSelectionEvidence,
+        preSubmitVerification: preSubmitGate?.evidence,
+        warnings: submission.stopCleanupWarnings,
+        runtime: {
+          chromePort: port,
+          chromeHost: host,
+          chromeTargetId: remoteTargetId ?? undefined,
+          tabUrl: lastUrl,
+        },
+      });
+    }
     const imageArtifactMinTurnIndex = baselineTurns;
     if (deepResearch) {
       await waitForResearchPlanAutoConfirm(Runtime, logger);
@@ -3280,6 +3409,7 @@ async function runRemoteBrowserMode(
         artifacts: savedArtifacts,
         archive,
         modelSelection: modelSelectionEvidence,
+        preSubmitVerification: preSubmitGate?.evidence,
         tookMs: durationMs,
         answerTokens: tokens,
         answerChars: researchResult.text.length,
@@ -3756,6 +3886,7 @@ async function runRemoteBrowserMode(
       savedFiles: fileArtifacts.savedFiles,
       archive,
       modelSelection: modelSelectionEvidence,
+      preSubmitVerification: preSubmitGate?.evidence,
       controllerPid: process.pid,
     };
   } catch (error) {
@@ -3872,6 +4003,7 @@ export const __test__ = {
   isImageOnlyUiChromeText,
   listIgnoredRemoteChromeFlags,
   resolveManualLoginWaitMs,
+  shouldApplyThinkingTimeSelection,
   shouldCleanupBlankTabsAfterLastLease,
   shouldCloseOwnedRunTargetAfterRun,
   shouldKeepLocalBrowserOpen,

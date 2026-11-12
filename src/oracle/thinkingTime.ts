@@ -1,12 +1,27 @@
 import type { ThinkingTimeLevel } from "./types.js";
 
-export const THINKING_TIME_LEVELS = ["light", "standard", "extended", "heavy"] as const;
+/** Canonical effort levels in ChatGPT slider order; the array index is the slider value. */
+export const THINKING_TIME_LEVELS = ["instant", "medium", "high", "extra-high", "pro"] as const;
+
+/** Display labels ChatGPT shows for each slider step. */
+export const THINKING_TIME_LABELS: Readonly<Record<ThinkingTimeLevel, string>> = {
+  instant: "Instant",
+  medium: "Medium",
+  high: "High",
+  "extra-high": "Extra High",
+  pro: "Pro",
+};
+
+/**
+ * Earlier four-level names and UI aliases. Their meaning is fixed:
+ * light/low -> instant, standard -> medium, extended -> high, heavy/xhigh -> extra-high.
+ */
 export const THINKING_TIME_ALIASES = [
-  "instant",
+  "light",
   "low",
-  "medium",
-  "high",
-  "extra-high",
+  "standard",
+  "extended",
+  "heavy",
   "extra high",
   "extrahigh",
   "xhigh",
@@ -27,22 +42,34 @@ export function normalizeThinkingTimeLevel(
     .replace(/[_\s]+/g, "-");
 
   switch (normalized) {
-    case "light":
     case "instant":
+    case "light":
     case "low":
-      return "light";
-    case "standard":
+      return "instant";
     case "medium":
-      return "standard";
-    case "extended":
+    case "standard":
+      return "medium";
     case "high":
-      return "extended";
-    case "heavy":
+    case "extended":
+      return "high";
     case "extra-high":
     case "extrahigh":
+    case "heavy":
     case "xhigh":
-      return "heavy";
+      return "extra-high";
+    case "pro":
+      return "pro";
     default:
       return null;
   }
+}
+
+/** Slider index (0..4) for a canonical effort level. */
+export function thinkingTimeLevelIndex(level: ThinkingTimeLevel): number {
+  return THINKING_TIME_LEVELS.indexOf(level);
+}
+
+/** Canonical effort level for a slider index, or null when the index is outside 0..4. */
+export function thinkingTimeLevelAtIndex(index: number): ThinkingTimeLevel | null {
+  return Number.isInteger(index) ? (THINKING_TIME_LEVELS[index] ?? null) : null;
 }

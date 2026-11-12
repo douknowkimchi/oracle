@@ -7,6 +7,7 @@ import type {
   BrowserSessionConfig,
   BrowserRuntimeMetadata,
   BrowserModelSelectionEvidence,
+  BrowserPreSubmitVerification,
   SessionArtifact,
   SessionModelRun,
 } from "../sessionStore.js";
@@ -140,20 +141,23 @@ export async function performSessionRun({
         },
         runnerDeps,
       );
-      await writeAssistantOutput(runOptions.writeOutputPath, result.answerText ?? "", log);
-      await sendSessionNotification(
-        {
-          sessionId: sessionMeta.id,
-          sessionName: sessionMeta.options?.slug ?? sessionMeta.id,
-          mode,
-          model: sessionMeta.model,
-          usage: result.usage,
-          characters: result.answerText?.length,
-        },
-        notificationSettings,
-        log,
-        result.answerText?.slice(0, 140),
-      );
+      // A stop-before-submit check has no answer: skip output files and notifications.
+      if (!result.preSubmitVerification?.stoppedBeforeSubmit) {
+        await writeAssistantOutput(runOptions.writeOutputPath, result.answerText ?? "", log);
+        await sendSessionNotification(
+          {
+            sessionId: sessionMeta.id,
+            sessionName: sessionMeta.options?.slug ?? sessionMeta.id,
+            mode,
+            model: sessionMeta.model,
+            usage: result.usage,
+            characters: result.answerText?.length,
+          },
+          notificationSettings,
+          log,
+          result.answerText?.slice(0, 140),
+        );
+      }
       if (modelForStatus) {
         await sessionStore.updateModelRun(sessionMeta.id, modelForStatus, {
           status: "completed",
@@ -172,6 +176,7 @@ export async function performSessionRun({
           runtime: result.runtime,
           archive: result.archive,
           modelSelection: result.modelSelection,
+          preSubmitVerification: result.preSubmitVerification,
           warnings: result.warnings,
         },
         artifacts: mergeArtifacts(sessionMeta.artifacts, result.artifacts),
@@ -747,6 +752,7 @@ export async function performSessionRun({
     if (!cloudflareChallenge && browserCanReattach) {
       logBrowserReattachGuidance(browserRuntime ?? currentBrowser?.runtime);
     }
+    const preSubmitVerification = readPreSubmitVerification(userError?.details);
     await sessionStore.updateSession(sessionMeta.id, {
       status: "error",
       completedAt: new Date().toISOString(),
@@ -757,6 +763,7 @@ export async function performSessionRun({
             ...currentBrowser,
             config: browserConfig,
             runtime: browserRuntime ?? currentBrowser?.runtime,
+            ...(preSubmitVerification ? { preSubmitVerification } : {}),
           }
         : undefined,
       response: responseMetadata,
@@ -792,6 +799,12 @@ function mergeArtifacts(
   }
   const values = Array.from(merged.values());
   return values.length > 0 ? values : undefined;
+}
+
+/** Pre-submit evidence attached to a failed final composer check (details.preSubmitVerification). */
+function readPreSubmitVerification(details: unknown): BrowserPreSubmitVerification | undefined {
+  const value = (details as { preSubmitVerification?: unknown } | undefined)?.preSubmitVerification;
+  return value && typeof value === "object" ? (value as BrowserPreSubmitVerification) : undefined;
 }
 
 function formatError(error: unknown): string {

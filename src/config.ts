@@ -9,6 +9,7 @@ import type {
   BrowserResearchMode,
 } from "./browser/types.js";
 import type { ThinkingTimeLevel, ModelOverridesConfig } from "./oracle/types.js";
+import { normalizeThinkingTimeLevel } from "./oracle/thinkingTime.js";
 
 export type EnginePreference = "api" | "browser";
 
@@ -57,7 +58,10 @@ export interface BrowserConfigDefaults {
   hideWindow?: boolean;
   keepBrowser?: boolean;
   modelStrategy?: BrowserModelStrategy;
-  /** Thinking time intensity (ChatGPT Thinking/Pro models): 'light', 'standard', 'extended', 'heavy' */
+  /**
+   * Effort slider level: instant, medium, high, extra-high, pro. Config files may use the legacy
+   * light/standard/extended/heavy names; readConfigFile normalizes them when loading.
+   */
   thinkingTime?: ThinkingTimeLevel;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;
@@ -171,7 +175,11 @@ async function readConfigFile(configPath: string): Promise<ReadConfigResult> {
   try {
     const raw = await fs.readFile(configPath, "utf8");
     const parsed = JSON5.parse(raw) as UserConfig;
-    return { config: parsed ?? {}, path: configPath, loaded: true };
+    return {
+      config: normalizeConfigThinkingTime(parsed ?? {}, configPath),
+      path: configPath,
+      loaded: true,
+    };
   } catch (error) {
     const code = (error as { code?: string }).code;
     if (code === "ENOENT") {
@@ -182,6 +190,17 @@ async function readConfigFile(configPath: string): Promise<ReadConfigResult> {
     );
     return { config: {}, path: configPath, loaded: false };
   }
+}
+
+/** Maps legacy effort names in a config file to the canonical slider levels. */
+function normalizeConfigThinkingTime(config: UserConfig, configPath: string): UserConfig {
+  const raw = config.browser?.thinkingTime as unknown;
+  if (raw === undefined || !config.browser) return config;
+  const normalized = typeof raw === "string" ? normalizeThinkingTimeLevel(raw) : null;
+  if (!normalized) {
+    console.warn(`Ignoring unknown browser.thinkingTime ${JSON.stringify(raw)} in ${configPath}.`);
+  }
+  return { ...config, browser: { ...config.browser, thinkingTime: normalized ?? undefined } };
 }
 
 export function configPath(): string {

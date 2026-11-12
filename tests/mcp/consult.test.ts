@@ -28,7 +28,7 @@ describe("summarizeModelRunsForConsult", () => {
     ).toMatchObject({
       engine: "browser",
       model: "gpt-5.5-pro",
-      browserThinkingTime: "extended",
+      browserThinkingTime: "high",
     });
 
     expect(
@@ -37,12 +37,12 @@ describe("summarizeModelRunsForConsult", () => {
         prompt: "use current picker",
         files: [],
         model: "gpt-5.2",
-        browserThinkingTime: "extended",
+        browserThinkingTime: "high",
       }),
     ).toMatchObject({
       engine: "browser",
       model: "gpt-5.2",
-      browserThinkingTime: "extended",
+      browserThinkingTime: "high",
     });
   });
 
@@ -65,7 +65,7 @@ describe("summarizeModelRunsForConsult", () => {
         browserThinkingTime: "xhigh",
       }),
     ).toMatchObject({
-      browserThinkingTime: "heavy",
+      browserThinkingTime: "extra-high",
     });
   });
 
@@ -191,7 +191,7 @@ describe("summarizeModelRunsForConsult", () => {
       keepBrowser: true,
       manualLogin: true,
       manualLoginProfileDir: "/tmp/oracle-profile",
-      thinkingTime: "extended",
+      thinkingTime: "high",
       researchMode: "deep",
       archiveConversations: "never",
       desiredModel: "GPT-5.2",
@@ -218,7 +218,7 @@ describe("summarizeModelRunsForConsult", () => {
           keepBrowser: false,
           manualLogin: false,
           manualLoginProfileDir: "/tmp/config-profile",
-          thinkingTime: "light",
+          thinkingTime: "instant",
         },
       },
       env: {
@@ -228,7 +228,7 @@ describe("summarizeModelRunsForConsult", () => {
       inputModel: "claude-3.7-sonnet",
       browserModelLabel: "Claude Sonnet",
       browserKeepBrowser: true,
-      browserThinkingTime: "heavy",
+      browserThinkingTime: "extra-high",
       browserModelStrategy: "current",
       browserResearchMode: "deep",
       browserArchive: "always",
@@ -238,7 +238,7 @@ describe("summarizeModelRunsForConsult", () => {
       keepBrowser: true,
       manualLogin: true,
       manualLoginProfileDir: "/tmp/env-profile",
-      thinkingTime: "heavy",
+      thinkingTime: "extra-high",
       modelStrategy: "current",
       researchMode: "deep",
       archiveConversations: "always",
@@ -262,7 +262,7 @@ describe("summarizeModelRunsForConsult", () => {
       },
       browserConfig: {
         desiredModel: "GPT-5.5 Pro",
-        thinkingTime: "extended",
+        thinkingTime: "high",
         modelStrategy: "select",
         researchMode: "off",
         keepBrowser: false,
@@ -279,7 +279,7 @@ describe("summarizeModelRunsForConsult", () => {
       followUpCount: 2,
       browser: {
         desiredModel: "GPT-5.5 Pro",
-        thinkingTime: "extended",
+        thinkingTime: "high",
         attachments: "always",
         bundleFiles: true,
         bundleFormat: "zip",
@@ -292,7 +292,7 @@ describe("summarizeModelRunsForConsult", () => {
     expect(resolved.guidance.join("\n")).toContain("--browser-keep-browser");
     expect(resolved.guidance.join("\n")).toContain("image-aware wait/download");
     expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
-      "browser thinking time: extended",
+      "browser thinking time: high",
     );
     expect(formatConsultDryRunResolved(resolved).join("\n")).toContain(
       "browser bundle format: zip",
@@ -325,7 +325,7 @@ describe("summarizeModelRunsForConsult", () => {
         model: "gpt-5.5-pro",
         prompt: "review this",
         files: [],
-        browserThinkingTime: "extended",
+        browserThinkingTime: "high",
         browserModelStrategy: "select",
         generateImage: imagePath,
       })) as {
@@ -345,7 +345,7 @@ describe("summarizeModelRunsForConsult", () => {
           model: "gpt-5.5-pro",
           browser: expect.objectContaining({
             desiredModel: "Pro",
-            thinkingTime: "extended",
+            thinkingTime: "high",
             modelStrategy: "select",
             imageOutputPath: path.join(realpathSync(home), "generated", "from-mcp.png"),
           }),

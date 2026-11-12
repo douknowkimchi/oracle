@@ -4,6 +4,7 @@ import { formatTokenCount } from "../oracle/runUtils.js";
 import { formatFinishLine } from "../oracle/finishLine.js";
 import type {
   BrowserModelSelectionEvidence,
+  BrowserPreSubmitVerification,
   BrowserRunWarning,
   BrowserSessionConfig,
   BrowserRuntimeMetadata,
@@ -31,6 +32,7 @@ export interface BrowserExecutionResult {
   runtime: BrowserRuntimeMetadata;
   archive?: BrowserArchiveResult;
   modelSelection?: BrowserModelSelectionEvidence;
+  preSubmitVerification?: BrowserPreSubmitVerification;
   warnings?: BrowserRunWarning[];
   answerText: string;
   artifacts?: SessionArtifact[];
@@ -181,7 +183,7 @@ export async function runBrowserSessionExecution(
     if (typeof message !== "string") return;
     const shouldAlwaysPrint =
       message.startsWith("[browser] ") &&
-      /archive|fallback|follow-up|retry|thinking|waiting for chatgpt|browser slot|browser control|browser guidance|model selection|model picker/i.test(
+      /archive|fallback|follow-up|retry|thinking|waiting for chatgpt|browser slot|browser control|browser guidance|model selection|model picker|model submenu|pre-submit|stop-before-submit/i.test(
         message,
       );
     if (!runOptions.verbose && !shouldAlwaysPrint) return;
@@ -218,6 +220,7 @@ export async function runBrowserSessionExecution(
       generateImagePath: runOptions.generateImage,
       outputPath: runOptions.outputPath,
       followUpPrompts: runOptions.browserFollowUps,
+      requestedModel: runOptions.model,
       runtimeHintCb: async (runtime, modelSelection) => {
         const runtimeWithController = {
           ...runtime,
@@ -241,6 +244,37 @@ export async function runBrowserSessionExecution(
     browserResult.modelSelection ?? buildUnavailableModelSelectionEvidence(browserConfig);
   if (modelSelection) {
     log(formatModelSelectionEvidence(modelSelection));
+  }
+  const runtime: BrowserRuntimeMetadata = {
+    browserTransport: browserResult.browserTransport,
+    chromePid: browserResult.chromePid,
+    chromePort: browserResult.chromePort,
+    chromeHost: browserResult.chromeHost,
+    chromeBrowserWSEndpoint: browserResult.chromeBrowserWSEndpoint,
+    chromeProfileRoot: browserResult.chromeProfileRoot,
+    userDataDir: browserResult.userDataDir,
+    chromeTargetId: browserResult.chromeTargetId,
+    tabUrl: browserResult.tabUrl,
+    conversationId: browserResult.conversationId,
+    promptSubmitted: browserResult.promptSubmitted,
+    controllerPid: browserResult.controllerPid ?? process.pid,
+  };
+  const preSubmitVerification = browserResult.preSubmitVerification;
+  if (preSubmitVerification?.stoppedBeforeSubmit) {
+    const stopWarnings = browserResult.warnings ?? [];
+    for (const warning of stopWarnings) {
+      log(chalk.yellow(`[browser] ${warning.message}`));
+    }
+    log("[browser] Stopped before submit: pre-submit verification passed; nothing was sent.");
+    return {
+      usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+      elapsedMs: browserResult.tookMs,
+      runtime,
+      modelSelection,
+      preSubmitVerification,
+      warnings: stopWarnings.length > 0 ? stopWarnings : undefined,
+      answerText: "",
+    };
   }
   const warnings = buildBrowserRunWarnings({
     runOptions,
@@ -301,22 +335,10 @@ export async function runBrowserSessionExecution(
   return {
     usage,
     elapsedMs: browserResult.tookMs,
-    runtime: {
-      browserTransport: browserResult.browserTransport,
-      chromePid: browserResult.chromePid,
-      chromePort: browserResult.chromePort,
-      chromeHost: browserResult.chromeHost,
-      chromeBrowserWSEndpoint: browserResult.chromeBrowserWSEndpoint,
-      chromeProfileRoot: browserResult.chromeProfileRoot,
-      userDataDir: browserResult.userDataDir,
-      chromeTargetId: browserResult.chromeTargetId,
-      tabUrl: browserResult.tabUrl,
-      conversationId: browserResult.conversationId,
-      promptSubmitted: browserResult.promptSubmitted,
-      controllerPid: browserResult.controllerPid ?? process.pid,
-    },
+    runtime,
     archive: browserResult.archive,
     modelSelection,
+    preSubmitVerification,
     warnings,
     answerText,
     artifacts: savedArtifacts,

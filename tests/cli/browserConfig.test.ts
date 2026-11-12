@@ -35,6 +35,29 @@ describe("buildBrowserConfig", () => {
     expect(sol.desiredModel).toBe("GPT-5.6 Sol");
   });
 
+  test("maps gpt-6 to the exact GPT-6 submenu label and carries stop-before-submit", async () => {
+    const config = await buildBrowserConfig({
+      model: "gpt-6",
+      browserThinkingTime: "pro",
+      browserStopBeforeSubmit: true,
+    });
+    expect(config).toMatchObject({
+      desiredModel: "GPT-6",
+      thinkingTime: "pro",
+      stopBeforeSubmit: true,
+    });
+  });
+
+  test("rejects stop-before-submit through a remote browser service", async () => {
+    await expect(
+      buildBrowserConfig({
+        model: "gpt-6",
+        browserStopBeforeSubmit: true,
+        remoteHost: "127.0.0.1:9473",
+      }),
+    ).rejects.toThrow(/--browser-stop-before-submit cannot be combined with --remote-host/);
+  });
+
   test("keeps version signal for gpt-5.5 Instant browser runs", async () => {
     const config = await buildBrowserConfig({ model: "gpt-5.5-instant" });
     expect(config.desiredModel).toBe("GPT-5.5 Instant");

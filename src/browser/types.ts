@@ -2,6 +2,7 @@ import type CDP from "chrome-remote-interface";
 import type Protocol from "devtools-protocol";
 import type {
   BrowserModelSelectionEvidence,
+  BrowserPreSubmitVerification,
   BrowserRunWarning,
   BrowserRuntimeMetadata,
 } from "../sessionStore.js";
@@ -110,8 +111,10 @@ export interface BrowserAutomationConfig {
   manualLoginCookieSync?: boolean;
   /** Copy this signed-in Chrome user-data dir to a throwaway profile and run against it (login-free). */
   copyProfileSource?: string | null;
-  /** Thinking time intensity level for Thinking/Pro models: light, standard, extended, heavy */
+  /** Composer effort slider level: instant, medium, high, extra-high, pro (index 0..4). */
   thinkingTime?: ThinkingTimeLevel;
+  /** Run every selection and the final pre-submit check, then stop without sending. */
+  stopBeforeSubmit?: boolean;
   /** Browser-only research mode. "deep" activates ChatGPT Deep Research. */
   researchMode?: BrowserResearchMode;
   /** Archive completed ChatGPT conversations after local artifacts are saved. */
@@ -140,6 +143,8 @@ export interface BrowserRunOptions {
   outputPath?: string;
   /** Additional prompts to submit in the same browser conversation after the initial answer. */
   followUpPrompts?: string[];
+  /** Model id the caller requested (for example "gpt-6"); recorded in pre-submit evidence. */
+  requestedModel?: string;
   /**
    * Close a newly-created completed run tab even when the owning Chrome process
    * must remain alive. Used by long-lived shared browser services; incomplete
@@ -173,6 +178,7 @@ export interface BrowserRunResult {
   savedFiles?: SavedBrowserFile[];
   archive?: BrowserArchiveResult;
   modelSelection?: BrowserModelSelectionEvidence;
+  preSubmitVerification?: BrowserPreSubmitVerification;
   warnings?: BrowserRunWarning[];
   tookMs: number;
   answerTokens: number;

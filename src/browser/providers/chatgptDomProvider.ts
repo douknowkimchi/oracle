@@ -1,7 +1,11 @@
 import type { BrowserLogger, ChromeClient } from "../types.js";
 import type { ProviderDomAdapter, ProviderDomFlowContext } from "../providerDomFlow.js";
 import { ensurePromptReady } from "../actions/navigation.js";
-import { submitPrompt, type AttachmentReadyExpectation } from "../actions/promptComposer.js";
+import {
+  submitPrompt,
+  type AttachmentReadyExpectation,
+  type BeforeSendDecision,
+} from "../actions/promptComposer.js";
 import { waitForAssistantResponse } from "../actions/assistantResponse.js";
 
 interface ChatgptDomProviderState {
@@ -15,6 +19,7 @@ interface ChatgptDomProviderState {
   attachmentNames?: AttachmentReadyExpectation[];
   committedTurns?: number | null;
   onPromptSubmitted?: () => Promise<void> | void;
+  beforeSend?: () => Promise<BeforeSendDecision>;
 }
 
 function requireState(ctx: ProviderDomFlowContext): ChatgptDomProviderState {
@@ -45,6 +50,7 @@ async function submitPromptViaAdapter(ctx: ProviderDomFlowContext): Promise<void
       inputTimeoutMs: state.inputTimeoutMs ?? undefined,
       attachmentTimeoutMs: state.attachmentTimeoutMs ?? undefined,
       onPromptSubmitted: state.onPromptSubmitted,
+      beforeSend: state.beforeSend,
     },
     ctx.prompt,
     state.logger,

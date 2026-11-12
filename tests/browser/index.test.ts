@@ -248,10 +248,23 @@ describe("manual-login profile setup gate", () => {
   });
 });
 
-// NOTE: shouldSkipThinkingTimeSelection was removed — it incorrectly assumed
-// that selecting "Pro" in the picker always implied Extended effort, which is
-// wrong for lower-tier plans where Pro defaults to Standard. The thinking time
-// step now always runs; ensureThinkingTime handles the already-selected case.
+describe("thinking time selection policy", () => {
+  test("keeps explicit effort selection enabled for Deep Research", () => {
+    const config = resolveBrowserConfig({
+      desiredModel: "GPT-6",
+      thinkingTime: "pro",
+      researchMode: "deep",
+    });
+
+    expect(__test__.shouldApplyThinkingTimeSelection(config)).toBe(true);
+  });
+
+  test("does not select an effort when none was requested", () => {
+    const config = resolveBrowserConfig({ researchMode: "deep" });
+
+    expect(__test__.shouldApplyThinkingTimeSelection(config)).toBe(false);
+  });
+});
 
 describe("formatBrowserTurnTranscript", () => {
   test("keeps single-turn browser output unchanged", () => {

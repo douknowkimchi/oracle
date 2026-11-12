@@ -8,7 +8,33 @@ import {
 } from "../constants.js";
 import { logDomFailure } from "../domDebug.js";
 import { buildClickDispatcher } from "./domEvents.js";
+import { buildComposerPickerHelpers, type ComposerPickerFailure } from "./composerPicker.js";
 import { delay } from "../utils.js";
+
+/**
+ * Model labels the current composer picker lists verbatim in its model submenu.
+ * Pre-submit verification reads the checked submenu row for these labels.
+ */
+export const MODEL_SUBMENU_LABELS = ["GPT-6", "GPT-5.6 Sol"] as const;
+/** Labels selected only through the exact submenu path; older picker layouts never offered them. */
+const SUBMENU_ONLY_MODEL_LABELS: ReadonlySet<string> = new Set(["GPT-6"]);
+
+export function isModelSubmenuLabel(label: string | null | undefined): boolean {
+  return (MODEL_SUBMENU_LABELS as readonly string[]).includes(label ?? "");
+}
+
+type SubmenuModelOutcome =
+  | {
+      status: "already-selected" | "switched" | "read";
+      label: string;
+      targetChecked: boolean;
+      checkedLabels: string[];
+    }
+  | ComposerPickerFailure;
+
+export type ModelSubmenuRead =
+  | { ok: true; targetChecked: boolean; checkedLabels: string[] }
+  | { ok: false; failure: ComposerPickerFailure };
 
 const LEGACY_PRO_VERSION_WORD_TOKENS = ["5 4", "5 2", "5 1", "5 0", "gpt 5 pro"] as const;
 const LEGACY_PRO_VERSION_COMPACT_TOKENS = ["gpt54", "gpt52", "gpt51", "gpt50"] as const;
@@ -38,6 +64,9 @@ export async function ensureModelSelection(
   strategy: BrowserModelStrategy = "select",
   options: { buttonWaitMs?: number; buttonPollMs?: number } = {},
 ): Promise<BrowserModelSelectionEvidence> {
+  if (strategy === "select" && SUBMENU_ONLY_MODEL_LABELS.has(desiredModel)) {
+    return ensureSubmenuModelSelection(Runtime, desiredModel, logger);
+  }
   const buttonWaitMs = options.buttonWaitMs ?? MODEL_BUTTON_WAIT_MS;
   const buttonPollMs = options.buttonPollMs ?? MODEL_BUTTON_POLL_MS;
   const deadline = Date.now() + Math.max(0, buttonWaitMs);
@@ -104,7 +133,130 @@ export async function ensureModelSelection(
   }
 }
 
+/**
+ * Selects an exact model label from the current picker's model submenu. The checked row must
+ * carry the exact label after selection; otherwise this throws before any prompt is sent.
+ */
+async function ensureSubmenuModelSelection(
+  Runtime: ChromeClient["Runtime"],
+  desiredModel: string,
+  logger: BrowserLogger,
+): Promise<BrowserModelSelectionEvidence> {
+  const result = await evaluateSubmenuModel(Runtime, desiredModel, "select");
+  if (result.status === "failed" || !result.targetChecked) {
+    await logDomFailure(Runtime, logger, "model-submenu");
+    const reason = result.status === "failed" ? result.reason : "selection-unverified";
+    const diagnostic =
+      result.status === "failed" ? result.diagnostic : { checkedLabels: result.checkedLabels };
+    logger(`[browser] Model submenu diagnostic: ${JSON.stringify({ reason, diagnostic })}`);
+    throw new Error(
+      `Model picker: ${reason.replaceAll("-", " ")} for exact model label "${desiredModel}"; refusing to fall back to another model.`,
+    );
+  }
+  assertResolvedModelSelection(desiredModel, result.label);
+  logger(
+    `Model picker: ${result.label}${result.status === "already-selected" ? " (already selected)" : ""}`,
+  );
+  return {
+    requestedModel: desiredModel,
+    resolvedLabel: result.label,
+    strategy: "select",
+    status: result.status === "read" ? "already-selected" : result.status,
+    verified: true,
+    source: "chatgpt-model-picker",
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+/** Reads which model submenu row is checked, without changing it, and closes the picker. */
+export async function readModelSubmenuSelection(
+  Runtime: ChromeClient["Runtime"],
+  label: string,
+): Promise<ModelSubmenuRead> {
+  const result = await evaluateSubmenuModel(Runtime, label, "read");
+  if (result.status === "failed") {
+    return { ok: false, failure: result };
+  }
+  return { ok: true, targetChecked: result.targetChecked, checkedLabels: result.checkedLabels };
+}
+
+async function evaluateSubmenuModel(
+  Runtime: ChromeClient["Runtime"],
+  label: string,
+  mode: "select" | "read",
+): Promise<SubmenuModelOutcome> {
+  const outcome = await Runtime.evaluate({
+    expression: buildSubmenuModelExpression(label, mode),
+    awaitPromise: true,
+    returnByValue: true,
+  });
+  return (
+    (outcome.result?.value as SubmenuModelOutcome | undefined) ?? {
+      status: "failed",
+      reason: "menu-not-bound",
+      diagnostic: { emptyResult: true },
+    }
+  );
+}
+
+function buildSubmenuModelExpression(label: string, mode: "select" | "read"): string {
+  return `(async () => {
+    ${buildComposerPickerHelpers()}
+    const TARGET = ${JSON.stringify(label)};
+    const MODE = ${JSON.stringify(mode)};
+    const closeCurrentPicker = async () => {
+      const composer = pickerComposerForm();
+      await pickerCloseAll(composer ? pickerTrigger(composer.form) : null);
+    };
+    const readSelection = async () => {
+      const found = await pickerOpenModelSubmenu(TARGET);
+      if (found.failure) return { failure: found.failure };
+      if (found.matches.length !== 1) {
+        const failure = pickerFailure('option-ambiguous', {
+          labels: found.items.map((item) => pickerRedact(item.labels[0] ?? '', 60)),
+        });
+        await pickerCloseAll(found.trigger);
+        return { failure };
+      }
+      const checked = found.items.filter((item) => item.checked);
+      return {
+        found,
+        checkedLabels: checked.map((item) => pickerPrimaryLabel(item, TARGET)),
+        targetChecked: checked.length === 1 && checked[0] === found.matches[0],
+      };
+    };
+    const current = await readSelection();
+    if (current.failure) return current.failure;
+    if (MODE === 'read' || current.targetChecked) {
+      await pickerCloseAll(current.found.trigger);
+      return {
+        status: MODE === 'read' ? 'read' : 'already-selected',
+        label: TARGET,
+        targetChecked: current.targetChecked,
+        checkedLabels: current.checkedLabels,
+      };
+    }
+    pickerClick(current.found.matches[0].node);
+    await pickerSleep(300);
+    await closeCurrentPicker();
+    const after = await readSelection();
+    if (after.failure) {
+      return pickerFailure('selection-unverified', { cause: after.failure.reason, detail: after.failure.diagnostic });
+    }
+    await pickerCloseAll(after.found.trigger);
+    return { status: 'switched', label: TARGET, targetChecked: after.targetChecked, checkedLabels: after.checkedLabels };
+  })()`;
+}
+
 function assertResolvedModelSelection(desiredModel: string, resolvedLabel: string): void {
+  if (SUBMENU_ONLY_MODEL_LABELS.has(desiredModel)) {
+    if (resolvedLabel !== desiredModel) {
+      throw new Error(
+        `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires that exact model label.`,
+      );
+    }
+    return;
+  }
   const desired = desiredModel.toLowerCase();
   const resolved = resolvedLabel.toLowerCase();
   const normalizedDesired = normalizeResolvedModelLabel(desired);

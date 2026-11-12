@@ -164,7 +164,7 @@ export function parseThinkingTimeOption(value: string): ThinkingTimeLevel {
     return normalized;
   }
   throw new InvalidArgumentError(
-    'Thinking time must be one of "light", "standard", "extended", "heavy", or a ChatGPT UI alias like "instant", "medium", "high", or "extra-high".',
+    'Thinking time must be one of "instant", "medium", "high", "extra-high", or "pro" (legacy "light", "standard", "extended", "heavy" are also accepted).',
   );
 }
 
@@ -313,6 +313,14 @@ function parseBrowserGpt56Label(modelValue: string): { variant: string } | null 
   };
 }
 
+function parseBrowserGpt6Label(modelValue: string): { variant: string } | null {
+  const normalized = normalizeModelOption(modelValue).toLowerCase();
+  if (!normalized || normalized.includes("/")) return null;
+  const match = normalized.match(/^(?:chatgpt|gpt)[\s._-]*6(?:[\s._-]+(.+))?$/);
+  if (!match) return null;
+  return { variant: (match[1] ?? "").replace(/[^a-z0-9]+/g, " ").trim() };
+}
+
 export function isGpt56BrowserLabel(modelValue: string): boolean {
   return parseBrowserGpt56Label(modelValue) !== null;
 }
@@ -361,6 +369,15 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   }
   if (normalized.includes("classic")) {
     return "gpt-5-pro";
+  }
+  // ChatGPT model submenu label "GPT-6". Unknown GPT-6 variants fail instead of
+  // falling through to the generic GPT-5.2 default below.
+  const gpt6Label = parseBrowserGpt6Label(normalized);
+  if (gpt6Label) {
+    if (!gpt6Label.variant) return "gpt-6" as ModelName;
+    throw new InvalidArgumentError(
+      `Unknown GPT-6 browser variant "${gpt6Label.variant}". Use gpt-6.`,
+    );
   }
   // Browser label family currently exposed by ChatGPT as "GPT-5.6 Sol".
   const gpt56Label = parseBrowserGpt56Label(normalized);

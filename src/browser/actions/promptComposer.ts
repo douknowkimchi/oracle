@@ -31,6 +31,13 @@ export interface AttachmentReadyExpectation {
 
 type AttachmentReadyInput = string | AttachmentReadyExpectation;
 
+/** Decision made after the prompt is in the composer and before anything is sent. */
+export type BeforeSendDecision = "send" | "stop";
+
+/**
+ * Types the prompt and sends it. When `beforeSend` is set it runs after the prompt is in the
+ * composer; it may throw to abort, and "stop" returns before any send action (button or Enter).
+ */
 export async function submitPrompt(
   deps: {
     runtime: ChromeClient["Runtime"];
@@ -40,6 +47,7 @@ export async function submitPrompt(
     inputTimeoutMs?: number | null;
     attachmentTimeoutMs?: number | null;
     onPromptSubmitted?: () => Promise<void> | void;
+    beforeSend?: () => Promise<BeforeSendDecision>;
   },
   prompt: string,
   logger: BrowserLogger,
@@ -211,6 +219,11 @@ export async function submitPrompt(
         observedLength,
       },
     );
+  }
+
+  if (deps.beforeSend && (await deps.beforeSend()) === "stop") {
+    logger("Stopped before submit; the prompt was not sent.");
+    return null;
   }
 
   const clicked = await attemptSendButton(

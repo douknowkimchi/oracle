@@ -13,6 +13,7 @@ import { buildConversationTurnListExpression } from "../conversationTurns.js";
 import { delay } from "../utils.js";
 import { isDeepResearchIncompleteText } from "../deepResearchResult.js";
 import { buildClickDispatcher } from "./domEvents.js";
+import { buildComposerPickerHelpers } from "./composerPicker.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./assistantResponse.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
 
@@ -81,6 +82,71 @@ export async function activateDeepResearch(
         stage: "deep-research-activate",
       });
   }
+}
+
+/** Connector reference ChatGPT places in the composer once Deep Research is selected. */
+const DEEP_RESEARCH_COMPOSER_TOKEN = "app://connector_openai_deep_research";
+
+export interface DeepResearchComposerTokenState {
+  composerFound: boolean;
+  present: boolean;
+  /** Where the token was found inside the composer form, e.g. "a[href]" or "span:text". */
+  locations: string[];
+  /** Attribute occurrences outside the composer form (diagnostic only). */
+  outsideComposer: number;
+}
+
+/**
+ * Reads whether the Deep Research connector token is inside the same composer form as the
+ * prompt editor, then returns focus to that editor. Text matches inside the editable prompt
+ * count only when the prompt itself does not contain the token string.
+ */
+export async function readDeepResearchComposerToken(
+  Runtime: ChromeClient["Runtime"],
+  options: { prompt: string },
+): Promise<DeepResearchComposerTokenState> {
+  const { result } = await Runtime.evaluate({
+    expression: buildDeepResearchComposerTokenExpression(
+      !options.prompt.includes(DEEP_RESEARCH_COMPOSER_TOKEN),
+    ),
+    returnByValue: true,
+  });
+  const value = result?.value as DeepResearchComposerTokenState | undefined;
+  return value ?? { composerFound: false, present: false, locations: [], outsideComposer: 0 };
+}
+
+function buildDeepResearchComposerTokenExpression(allowEditableText: boolean): string {
+  return `(() => {
+    ${buildComposerPickerHelpers()}
+    const TOKEN = ${JSON.stringify(DEEP_RESEARCH_COMPOSER_TOKEN)};
+    const ALLOW_EDITABLE_TEXT = ${JSON.stringify(allowEditableText)};
+    const attributeHits = (node) =>
+      Array.from(node.attributes || [])
+        .filter((attr) => String(attr.value || '').includes(TOKEN))
+        .map((attr) => String(node.tagName || '').toLowerCase() + '[' + attr.name + ']');
+    const composer = pickerComposerForm();
+    let outsideComposer = 0;
+    for (const node of document.querySelectorAll('*')) {
+      if (composer && composer.form.contains(node)) continue;
+      if (attributeHits(node).length > 0) outsideComposer += 1;
+    }
+    if (!composer) return { composerFound: false, present: false, locations: [], outsideComposer };
+    const locations = [];
+    for (const node of [composer.form, ...composer.form.querySelectorAll('*')]) {
+      locations.push(...attributeHits(node));
+      const isLeaf = !node.children || node.children.length === 0;
+      if (!isLeaf || !String(node.textContent || '').includes(TOKEN)) continue;
+      const editable = Boolean(node.closest?.('[contenteditable="true"]')) &&
+        !node.closest?.('[contenteditable="false"]');
+      if (!editable || ALLOW_EDITABLE_TEXT) {
+        locations.push(String(node.tagName || '').toLowerCase() + ':text');
+      }
+    }
+    try {
+      composer.editor?.focus?.({ preventScroll: true });
+    } catch {}
+    return { composerFound: true, present: locations.length > 0, locations: locations.slice(0, 8), outsideComposer };
+  })()`;
 }
 
 async function clickTrustedPoint(

@@ -67,6 +67,7 @@ export const DEFAULT_BROWSER_CONFIG: ResolvedBrowserConfig = {
   researchMode: "off",
   archiveConversations: "auto",
   resumeConversationUrl: null,
+  stopBeforeSubmit: false,
 };
 
 export function resolveBrowserConfig(
@@ -151,6 +152,7 @@ export function resolveBrowserConfig(
     remoteChromeProfileRoot:
       config?.remoteChromeProfileRoot ?? DEFAULT_BROWSER_CONFIG.remoteChromeProfileRoot,
     thinkingTime: config?.thinkingTime,
+    stopBeforeSubmit: config?.stopBeforeSubmit === true,
     researchMode,
     archiveConversations,
     resumeConversationUrl:

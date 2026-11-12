@@ -36,7 +36,11 @@ export type ProModelName =
 
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
-export type ThinkingTimeLevel = "light" | "standard" | "extended" | "heavy";
+/**
+ * ChatGPT composer effort levels, in slider order (index 0..4).
+ * "pro" is the fifth effort step; it is unrelated to Pro model labels such as "5.5 Pro".
+ */
+export type ThinkingTimeLevel = "instant" | "medium" | "high" | "extra-high" | "pro";
 
 export type BrowserBundleFormat = "auto" | "text" | "zip";
 

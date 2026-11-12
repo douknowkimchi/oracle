@@ -35,7 +35,7 @@ describe("chatgpt_image MCP tool", () => {
       files: ["reference.png"],
       outputPath: "/tmp/screenshot-bg.png",
       aspectRatio: "9:16",
-      browserThinkingTime: "extended",
+      browserThinkingTime: "high",
     });
 
     expect(input).toMatchObject({
@@ -43,7 +43,7 @@ describe("chatgpt_image MCP tool", () => {
       generateImage: "/tmp/screenshot-bg.png",
       files: ["reference.png"],
       browserAttachments: "always",
-      browserThinkingTime: "extended",
+      browserThinkingTime: "high",
     });
     expect(input.prompt).toContain("aspect ratio 9:16");
   });
@@ -74,7 +74,7 @@ describe("chatgpt_image MCP tool", () => {
     })) as {
       structuredContent: { resolved: { browser?: { thinkingTime?: string } } };
     };
-    expect(result.structuredContent.resolved.browser?.thinkingTime).toBe("heavy");
+    expect(result.structuredContent.resolved.browser?.thinkingTime).toBe("extra-high");
   });
 
   test("uses a unique default output path when agents only provide a prompt", () => {

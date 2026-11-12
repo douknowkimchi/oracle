@@ -1026,6 +1026,91 @@ describe("performSessionRun", () => {
     }
   }, 10_000);
 
+  test("records stop-before-submit evidence without notifications or output files", async () => {
+    const preSubmitVerification = {
+      requestedModel: "gpt-6",
+      resolvedModelLabel: "GPT-6",
+      modelChecked: true,
+      requestedEffort: "pro" as const,
+      observedEffortIndex: 4,
+      observedEffortLabel: "Pro",
+      effortRangeMin: 0,
+      effortRangeMax: 4,
+      deepResearchRequested: true,
+      deepResearchTokenPresent: true,
+      attachmentCount: 0,
+      verified: true,
+      stoppedBeforeSubmit: true,
+      mismatches: [],
+      capturedAt: "2026-11-13T00:00:00.000Z",
+    };
+    vi.mocked(sendSessionNotification).mockClear();
+    vi.mocked(runBrowserSessionExecution).mockResolvedValue({
+      usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+      elapsedMs: 1000,
+      runtime: { chromePort: 9222, promptSubmitted: false },
+      preSubmitVerification,
+      answerText: "",
+    });
+
+    await performSessionRun({
+      sessionMeta: baseSessionMeta,
+      runOptions: { ...baseRunOptions, writeOutputPath: "/tmp/stop-output.md" },
+      mode: "browser",
+      browserConfig: { chromePath: null, stopBeforeSubmit: true },
+      cwd: "/tmp",
+      log,
+      write,
+      version: cliVersion,
+    });
+
+    expect(vi.mocked(sendSessionNotification)).not.toHaveBeenCalled();
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: "completed",
+      browser: expect.objectContaining({
+        runtime: expect.objectContaining({ promptSubmitted: false }),
+        preSubmitVerification,
+      }),
+    });
+  });
+
+  test("keeps pre-submit mismatch evidence on the error session", async () => {
+    const preSubmitVerification = {
+      requestedModel: "gpt-6",
+      resolvedModelLabel: "GPT-5.6 Sol",
+      modelChecked: false,
+      verified: false,
+      stoppedBeforeSubmit: true,
+      mismatches: ["model: expected GPT-6"],
+    };
+    vi.mocked(runBrowserSessionExecution).mockRejectedValue(
+      new BrowserAutomationError("Pre-submit verification failed; nothing was sent.", {
+        stage: "pre-submit-verification",
+        preSubmitVerification,
+      }),
+    );
+
+    await expect(
+      performSessionRun({
+        sessionMeta: baseSessionMeta,
+        runOptions: baseRunOptions,
+        mode: "browser",
+        browserConfig: { chromePath: null, stopBeforeSubmit: true },
+        cwd: "/tmp",
+        log,
+        write,
+        version: cliVersion,
+      }),
+    ).rejects.toThrow(/Pre-submit verification failed/);
+
+    const finalUpdate = sessionStoreMock.updateSession.mock.calls.at(-1)?.[1];
+    expect(finalUpdate).toMatchObject({
+      status: "error",
+      browser: expect.objectContaining({ preSubmitVerification }),
+    });
+  });
+
   test("invokes browser runner when mode is browser", async () => {
     vi.mocked(runBrowserSessionExecution).mockResolvedValue({
       usage: { inputTokens: 100, outputTokens: 50, reasoningTokens: 0, totalTokens: 150 },

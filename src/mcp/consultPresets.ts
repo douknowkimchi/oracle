@@ -1,7 +1,9 @@
+import type { ThinkingTimeLevel } from "../oracle/types.js";
 import type { ConsultInput } from "./types.js";
 
 const CHATGPT_PRO_HEAVY_MODEL = "gpt-5.5-pro";
-const CHATGPT_PRO_HEAVY_THINKING_TIME = "extended";
+// Legacy "extended" keeps its fixed meaning: slider step 2 (High).
+const CHATGPT_PRO_HEAVY_THINKING_TIME: ThinkingTimeLevel = "high";
 
 export function applyConsultPreset(input: ConsultInput): ConsultInput {
   if (!input.preset) {

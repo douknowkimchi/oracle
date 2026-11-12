@@ -186,18 +186,21 @@ describe("parseSearchOption", () => {
 
 describe("parseThinkingTimeOption", () => {
   test.each([
-    ["light", "light"],
-    ["instant", "light"],
-    ["low", "light"],
-    ["standard", "standard"],
-    ["medium", "standard"],
-    ["extended", "extended"],
-    ["high", "extended"],
-    ["heavy", "heavy"],
-    ["extra-high", "heavy"],
-    ["extra high", "heavy"],
-    ["extrahigh", "heavy"],
-    ["xhigh", "heavy"],
+    ["instant", "instant"],
+    ["medium", "medium"],
+    ["high", "high"],
+    ["extra-high", "extra-high"],
+    ["pro", "pro"],
+    ["PRO", "pro"],
+    // Legacy four-level names keep their fixed meaning.
+    ["light", "instant"],
+    ["low", "instant"],
+    ["standard", "medium"],
+    ["extended", "high"],
+    ["heavy", "extra-high"],
+    ["extra high", "extra-high"],
+    ["extrahigh", "extra-high"],
+    ["xhigh", "extra-high"],
   ] as const)("normalizes %s to %s", (input, expected) => {
     expect(parseThinkingTimeOption(input)).toBe(expected);
   });
@@ -266,6 +269,14 @@ describe("resolveApiModel", () => {
     expect(resolveApiModel("openai/gpt-5.4")).toBe("openai/gpt-5.4");
     expect(resolveApiModel("anthropic/claude-sonnet-4.5")).toBe("anthropic/claude-sonnet-4.5");
     expect(resolveApiModel("google/gemini-2.5-pro")).toBe("google/gemini-2.5-pro");
+  });
+});
+
+describe("inferModelFromLabel for GPT-6", () => {
+  test("resolves gpt-6 aliases and rejects unknown GPT-6 variants", () => {
+    expect(inferModelFromLabel("gpt-6")).toBe("gpt-6");
+    expect(inferModelFromLabel("GPT-6")).toBe("gpt-6");
+    expect(() => inferModelFromLabel("gpt-6-mini")).toThrow(InvalidArgumentError);
   });
 });
 

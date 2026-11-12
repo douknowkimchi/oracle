@@ -24,6 +24,7 @@ import type {
   ModelOverridesConfig,
   PreviewMode,
   RunOracleOptions,
+  ThinkingTimeLevel,
 } from "../src/oracle/types.js";
 import { CHATGPT_URL } from "../src/browser/constants.js";
 import { applyHelpStyling } from "../src/cli/help.js";
@@ -146,8 +147,9 @@ interface CliOptions extends OptionValues {
   browserManualLogin?: boolean;
   browserManualLoginProfileDir?: string;
   copyProfile?: string;
-  browserThinkingTime?: "light" | "standard" | "extended" | "heavy";
+  browserThinkingTime?: ThinkingTimeLevel;
   browserResearch?: "off" | "deep";
+  browserStopBeforeSubmit?: boolean;
   browserFollowUp?: string[];
   browserAllowCookieErrors?: boolean;
   browserAttachments?: string;
@@ -781,10 +783,16 @@ program
   .addOption(
     new Option(
       "--browser-thinking-time <level>",
-      "Thinking time intensity for Thinking/Pro models: light, standard, extended, heavy, or ChatGPT UI aliases.",
+      "ChatGPT effort slider level: instant, medium, high, extra-high, or pro (legacy light, standard, extended, heavy are accepted).",
     )
       .argParser(parseThinkingTimeOption)
       .hideHelp(),
+  )
+  .addOption(
+    new Option(
+      "--browser-stop-before-submit",
+      "Run model/effort selection, uploads, Deep Research activation and prompt entry, verify the composer, then stop without sending (exit 0 only when verified).",
+    ),
   )
   .addOption(
     new Option(
@@ -2104,6 +2112,9 @@ async function runRootCommand(options: CliOptions): Promise<void> {
     throw new Error("--browser-follow-up requires --engine browser.");
   }
 
+  if (options.browserStopBeforeSubmit && engine !== "browser") {
+    throw new Error("--browser-stop-before-submit requires --engine browser.");
+  }
   const sessionMode: SessionMode = engine === "browser" ? "browser" : "api";
   const browserConfig = await (async (): Promise<BrowserSessionConfig | undefined> => {
     if (sessionMode !== "browser") return undefined;

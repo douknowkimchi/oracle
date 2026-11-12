@@ -5,7 +5,10 @@ import {
   buildModelMatchersLiteralForTest,
   buildModelSelectionExpressionForTest,
   ensureModelSelection,
+  readModelSubmenuSelection,
 } from "../../src/browser/actions/modelSelection.js";
+import type { BrowserLogger } from "../../src/browser/types.js";
+import { FakePickerDom, type FakePickerOptions } from "./fakeComposerPicker.js";
 
 const expectContains = (arr: string[], value: string) => {
   expect(arr).toContain(value);
@@ -1595,5 +1598,104 @@ describe("ensureModelSelection composer-pill wait", () => {
         buttonPollMs: 1,
       }),
     ).rejects.toThrow(/Unable to locate the ChatGPT model selector button/);
+  });
+});
+
+describe("exact model submenu selection (GPT-6)", () => {
+  const setupPicker = (options: FakePickerOptions = {}) => {
+    const dom = new FakePickerDom(options);
+    const { Runtime } = dom.cdp();
+    const logs: string[] = [];
+    const logger = ((message: string) => logs.push(message)) as BrowserLogger;
+    return { dom, Runtime: Runtime as never, logger, logs };
+  };
+
+  it("opens the bound model submenu, checks GPT-6, and verifies it after reopening", async () => {
+    const { dom, Runtime, logger } = setupPicker({ checkedModel: "GPT-5.6 Sol" });
+
+    const evidence = await ensureModelSelection(Runtime, "GPT-6", logger, "select");
+
+    expect(evidence).toMatchObject({
+      requestedModel: "GPT-6",
+      resolvedLabel: "GPT-6",
+      status: "switched",
+      verified: true,
+      source: "chatgpt-model-picker",
+    });
+    expect(dom.checkedModels()).toEqual(["GPT-6"]);
+    expect(dom.menuOpen).toBe(false);
+  });
+
+  it("does not click when GPT-6 is already checked", async () => {
+    const { dom, Runtime, logger } = setupPicker({ checkedModel: "GPT-6" });
+
+    const evidence = await ensureModelSelection(Runtime, "GPT-6", logger, "select");
+
+    expect(evidence.status).toBe("already-selected");
+    expect(
+      dom.events.filter((event) => event.target === dom.modelItems[0] && event.type === "click"),
+    ).toHaveLength(0);
+  });
+
+  it("matches the exact title line when a row also shows a description", async () => {
+    const { dom, Runtime, logger } = setupPicker({
+      models: [{ label: "GPT-6", description: "Our newest model" }, { label: "GPT-5.6 Sol" }],
+      checkedModel: "GPT-5.6 Sol",
+    });
+
+    await ensureModelSelection(Runtime, "GPT-6", logger, "select");
+
+    expect(dom.checkedModels()).toEqual(["GPT-6"]);
+  });
+
+  it("refuses a prefix match instead of selecting another model", async () => {
+    const { dom, Runtime, logger } = setupPicker({
+      models: [{ label: "GPT-6 mini" }, { label: "GPT-5.6 Sol" }],
+      checkedModel: "GPT-5.6 Sol",
+    });
+
+    await expect(ensureModelSelection(Runtime, "GPT-6", logger, "select")).rejects.toThrow(
+      /option not found for exact model label "GPT-6"/,
+    );
+    expect(dom.checkedModels()).toEqual(["GPT-5.6 Sol"]);
+  });
+
+  it("fails when the click does not change the checked row", async () => {
+    const { Runtime, logger, logs } = setupPicker({
+      checkedModel: "GPT-5.6 Sol",
+      modelClickIgnored: true,
+    });
+
+    await expect(ensureModelSelection(Runtime, "GPT-6", logger, "select")).rejects.toThrow(
+      /selection unverified/,
+    );
+    expect(logs.join("\n")).toContain('"checkedLabels":["GPT-5.6 Sol"]');
+  });
+
+  it("fails when the trigger exposes no bound menu", async () => {
+    const { Runtime, logger } = setupPicker({ unboundMenu: true });
+
+    await expect(ensureModelSelection(Runtime, "GPT-6", logger, "select")).rejects.toThrow(
+      /menu not bound/,
+    );
+  });
+
+  it("reads the checked row without changing it", async () => {
+    const { dom, Runtime } = setupPicker({ checkedModel: "GPT-5.6 Sol" });
+
+    await expect(readModelSubmenuSelection(Runtime, "GPT-6")).resolves.toEqual({
+      ok: true,
+      targetChecked: false,
+      checkedLabels: ["GPT-5.6 Sol"],
+    });
+    expect(dom.checkedModels()).toEqual(["GPT-5.6 Sol"]);
+    expect(dom.menuOpen).toBe(false);
+  });
+
+  it("requires the exact GPT-6 label in the resolved-selection guard", () => {
+    expect(() => assertResolvedModelSelectionForTest("GPT-6", "GPT-6")).not.toThrow();
+    expect(() => assertResolvedModelSelectionForTest("GPT-6", "GPT-5.6 Sol")).toThrow(
+      /requires that exact model label/,
+    );
   });
 });
