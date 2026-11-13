@@ -532,6 +532,22 @@ describe("pre-submit gate state", () => {
     expect(logs.join("\n")).toContain('"effortFallback":"pro -> extra-high (pro-step-locked)"');
   });
 
+  it("fails a missing-Pro-step fallback when the final read offers Pro again", async () => {
+    const { Runtime, Input, logger } = setup({ effort: { min: "0", max: "4", value: "3" } });
+    const gate = createPreSubmitGate(Runtime, Input, PLAN, logger);
+    gate.recordEffortSelection({
+      level: "extra-high",
+      index: 3,
+      label: "Extra High",
+      status: "switched",
+      requestedLevel: "pro",
+      fallback: { from: "pro", reason: "pro-step-absent" },
+    });
+
+    const evidence = await verificationFailure(gate.beforeSend({ attachmentCount: 0 })());
+
+    expect(evidence.mismatches.join(" ")).toContain("Pro step is offered again (range 0..4)");
+  });
   it("still fails a Pro request whose slider sits at Extra High without a reported fallback", async () => {
     const { Runtime, Input, logger } = setup({ effort: { min: "0", max: "4", value: "3" } });
     const gate = createPreSubmitGate(Runtime, Input, PLAN, logger);

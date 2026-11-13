@@ -36,9 +36,10 @@ export type EffortSliderRead =
 
 /**
  * Why a Pro request ran at Extra High. Each reason is something the picker showed:
- * - pro-step-absent: the slider offered only 0..3.
- * - pro-step-locked: ArrowRight at Extra High did not move the slider.
- * - pro-not-kept: the slider reached Pro but read Extra High after the picker was reopened.
+ * - pro-step-absent: the slider offered only 0..3, at the first and the confirming read.
+ * - pro-step-locked: on every attempt ArrowRight at Extra High was refused while the row still
+ *   moved 3 -> 2 -> 3.
+ * - pro-not-kept: on every attempt the slider reached Pro but read Extra High after reopening.
  */
 export type ProEffortFallbackReason = "pro-step-absent" | "pro-step-locked" | "pro-not-kept";
 
@@ -178,74 +179,207 @@ async function selectEffort(
   level: ThinkingTimeLevel,
   logger: BrowserLogger,
 ): Promise<EffortSelectionResult> {
-  const wantsPro = level === "pro";
-  let target = thinkingTimeLevelIndex(level);
-  let fallback: EffortFallback | null = null;
-  let state = usableSlider(await openEffortView(Runtime, Input), level, wantsPro);
+  if (level === "pro") return selectPro(Runtime, Input, logger);
+  const target = thinkingTimeLevelIndex(level);
+  const opened = usableSlider(await openEffortView(Runtime, Input), level);
+  const initial = opened.value;
+  await stepTo(Runtime, Input, opened, target, level);
+  await closeOrFail(Runtime, Input, level);
+  const confirmed = await confirmSlider(Runtime, Input, level, false);
+  if (confirmed.value !== target) throw effortMismatch("effort-not-persisted", level, confirmed);
+  return finishSelection(logger, level, target, initial, null);
+}
+
+/** Times a Pro step must be refused, the same way each time, before a Pro request runs at Extra High. */
+const PRO_STEP_ATTEMPTS = 3;
+
+/**
+ * Selects Pro. Runs at Extra High only when the picker shows Pro as unavailable:
+ * - the slider offers 0..3 (and still does at the confirming read), or
+ * - on every one of PRO_STEP_ATTEMPTS attempts, ArrowRight from Extra High is refused while the
+ *   row demonstrably takes keys (ArrowLeft then ArrowRight move it 3 -> 2 -> 3), or
+ * - on every attempt the slider reaches Pro but reads Extra High after the picker is reopened.
+ * A single refusal or revert followed by a kept Pro selects Pro. Anything else fails.
+ */
+async function selectPro(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  logger: BrowserLogger,
+): Promise<EffortSelectionResult> {
+  const level: ThinkingTimeLevel = "pro";
+  let state = usableSlider(await openEffortView(Runtime, Input), level, true);
   const initial = state.value;
-  if (wantsPro && state.max === PRO_FALLBACK_INDEX) {
-    target = PRO_FALLBACK_INDEX;
-    fallback = { from: "pro", reason: "pro-step-absent" };
+  if (state.max === PRO_FALLBACK_INDEX) {
+    await stepTo(Runtime, Input, state, PRO_FALLBACK_INDEX, level, true);
+    await closeOrFail(Runtime, Input, level);
+    const confirmed = await confirmSlider(Runtime, Input, level, true);
+    if (confirmed.max !== PRO_FALLBACK_INDEX) {
+      throw new EffortSelectionFailure(
+        "effort-range-changed",
+        `Thinking time: the slider range changed from 0..${PRO_FALLBACK_INDEX} to 0..${confirmed.max} while selecting Pro.`,
+        { observed: confirmed },
+      );
+    }
+    if (confirmed.value !== PRO_FALLBACK_INDEX) {
+      throw effortMismatch("effort-not-persisted", level, confirmed);
+    }
+    return finishSelection(logger, level, PRO_FALLBACK_INDEX, initial, "pro-step-absent");
   }
-  // Each key press must move one step toward the target, so at most max-min presses are needed.
+  if (state.value < PRO_FALLBACK_INDEX) {
+    state = await stepTo(Runtime, Input, state, PRO_FALLBACK_INDEX, level);
+  }
+  const refusals: ProEffortFallbackReason[] = [];
+  for (let attempt = 0; attempt < PRO_STEP_ATTEMPTS; attempt += 1) {
+    if (state.value !== EFFORT_SLIDER_MAX) {
+      const moved = await pressAndRead(Runtime, Input, "ArrowRight", state.value, level);
+      if (moved.value === PRO_FALLBACK_INDEX) {
+        refusals.push("pro-step-locked");
+        state = await proveRowTakesKeys(Runtime, Input, level);
+        continue;
+      }
+      if (moved.value !== EFFORT_SLIDER_MAX) {
+        throw effortMismatch("effort-key-no-effect", level, moved, {
+          key: "ArrowRight",
+          before: PRO_FALLBACK_INDEX,
+        });
+      }
+    }
+    await closeOrFail(Runtime, Input, level);
+    const confirmed = await confirmSlider(Runtime, Input, level, false);
+    if (confirmed.value === EFFORT_SLIDER_MAX) {
+      return finishSelection(logger, level, EFFORT_SLIDER_MAX, initial, null);
+    }
+    if (confirmed.value !== PRO_FALLBACK_INDEX) {
+      throw effortMismatch("effort-not-persisted", level, confirmed);
+    }
+    refusals.push("pro-not-kept");
+    state = usableSlider(await openEffortView(Runtime, Input), level);
+    if (state.value !== PRO_FALLBACK_INDEX) {
+      throw effortMismatch("effort-not-persisted", level, state);
+    }
+  }
+  const reason = refusals[0];
+  if (refusals.some((entry) => entry !== reason)) {
+    throw new EffortSelectionFailure(
+      "effort-pro-inconsistent",
+      "Thinking time: Pro was refused in different ways across attempts.",
+      { refusals },
+    );
+  }
+  await closeOrFail(Runtime, Input, level);
+  const confirmed = await confirmSlider(Runtime, Input, level, false);
+  if (confirmed.value !== PRO_FALLBACK_INDEX) {
+    throw effortMismatch("effort-not-persisted", level, confirmed);
+  }
+  return finishSelection(logger, level, PRO_FALLBACK_INDEX, initial, reason);
+}
+
+/** After a refused ArrowRight at Extra High: the row must still move 3 -> 2 -> 3. */
+async function proveRowTakesKeys(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  level: ThinkingTimeLevel,
+): Promise<UsableSliderState> {
+  const down = await pressAndRead(Runtime, Input, "ArrowLeft", PRO_FALLBACK_INDEX, level);
+  if (down.value !== PRO_FALLBACK_INDEX - 1) {
+    throw effortMismatch("effort-key-no-effect", level, down, {
+      key: "ArrowLeft",
+      before: PRO_FALLBACK_INDEX,
+    });
+  }
+  const up = await pressAndRead(Runtime, Input, "ArrowRight", down.value, level);
+  if (up.value !== PRO_FALLBACK_INDEX) {
+    throw effortMismatch("effort-key-no-effect", level, up, {
+      key: "ArrowRight",
+      before: down.value,
+    });
+  }
+  return up;
+}
+
+/** Moves one key at a time toward `target`; every press must step toward it without overshooting. */
+async function stepTo(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  start: UsableSliderState,
+  target: number,
+  level: ThinkingTimeLevel,
+  allowProStepAbsent = false,
+): Promise<UsableSliderState> {
+  let state = start;
   for (let presses = 0; state.value !== target; presses += 1) {
     if (presses >= EFFORT_SLIDER_MAX - EFFORT_SLIDER_MIN) {
       throw effortMismatch("effort-step-limit", level, state);
     }
-    if (!(await focusPowerRow(Runtime))) {
-      throw pickerFailureToEffortFailure(pickerFailure("focus-failed"), level);
-    }
     const previous = state.value;
     const key = target > previous ? "ArrowRight" : "ArrowLeft";
-    await pressPickerKey(Input, key);
-    state = await waitForSliderChange(Runtime, previous, level, fallback !== null);
+    state = await pressAndRead(Runtime, Input, key, previous, level, allowProStepAbsent);
     if (!sliderAdvancedTowardTarget(previous, state.value, target)) {
-      if (
-        wantsPro &&
-        fallback === null &&
-        key === "ArrowRight" &&
-        previous === PRO_FALLBACK_INDEX &&
-        state.value === PRO_FALLBACK_INDEX
-      ) {
-        // Pro is the next step and the slider refused it: run at Extra High instead.
-        target = PRO_FALLBACK_INDEX;
-        fallback = { from: "pro", reason: "pro-step-locked" };
-        break;
-      }
       throw effortMismatch("effort-key-no-effect", level, state, { key, before: previous });
     }
   }
+  return state;
+}
+
+async function pressAndRead(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  key: "ArrowLeft" | "ArrowRight",
+  previous: number,
+  level: ThinkingTimeLevel,
+  allowProStepAbsent = false,
+): Promise<UsableSliderState> {
+  if (!(await focusPowerRow(Runtime))) {
+    throw pickerFailureToEffortFailure(pickerFailure("focus-failed"), level);
+  }
+  await pressPickerKey(Input, key);
+  return waitForSliderChange(Runtime, previous, level, allowProStepAbsent);
+}
+
+async function closeOrFail(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  level: ThinkingTimeLevel,
+): Promise<void> {
   if (!(await closePicker(Runtime, Input))) {
     throw pickerFailureToEffortFailure(pickerFailure("menu-not-closed"), level);
   }
+}
+
+/** Re-reads the slider in a freshly opened picker; this is the value the run proceeds with. */
+async function confirmSlider(
+  Runtime: ChromeClient["Runtime"],
+  Input: ChromeClient["Input"],
+  level: ThinkingTimeLevel,
+  allowProStepAbsent: boolean,
+): Promise<UsableSliderState> {
   const confirmed = await readEffortSlider(Runtime, Input);
   if (!confirmed.ok) throw pickerFailureToEffortFailure(confirmed.failure, level);
-  const confirmedState = usableSlider(
-    { ...emptyStateFor(confirmed.state) },
-    level,
-    fallback?.reason === "pro-step-absent",
-  );
-  if (
-    wantsPro &&
-    fallback === null &&
-    target === EFFORT_SLIDER_MAX &&
-    confirmedState.value === PRO_FALLBACK_INDEX
-  ) {
-    // The slider showed Pro, then the page put it back to Extra High.
-    target = PRO_FALLBACK_INDEX;
-    fallback = { from: "pro", reason: "pro-not-kept" };
-  }
-  if (confirmedState.value !== target) {
-    throw effortMismatch("effort-not-persisted", level, confirmedState);
-  }
-  const effective = THINKING_TIME_LEVELS[target];
+  return usableSlider({ ...emptyStateFor(confirmed.state) }, level, allowProStepAbsent);
+}
+
+function finishSelection(
+  logger: BrowserLogger,
+  requested: ThinkingTimeLevel,
+  index: number,
+  initial: number,
+  fallbackReason: ProEffortFallbackReason | null,
+): EffortSelectionResult {
+  const effective = THINKING_TIME_LEVELS[index];
   const label = THINKING_TIME_LABELS[effective];
-  const status = initial === target ? "already-selected" : "switched";
-  const note = fallback ? ` (Pro unavailable: ${fallback.reason})` : "";
+  const status = initial === index ? "already-selected" : "switched";
+  const note = fallbackReason ? ` (Pro unavailable: ${fallbackReason})` : "";
   logger(
-    `${BROWSER_THINKING_LOG_PREFIX} ${label}${status === "already-selected" ? " (already selected)" : ""}${note} [slider ${target}/${EFFORT_SLIDER_MAX}]`,
+    `${BROWSER_THINKING_LOG_PREFIX} ${label}${status === "already-selected" ? " (already selected)" : ""}${note} [slider ${index}/${EFFORT_SLIDER_MAX}]`,
   );
-  return { level: effective, index: target, label, status, requestedLevel: level, fallback };
+  return {
+    level: effective,
+    index,
+    label,
+    status,
+    requestedLevel: requested,
+    fallback: fallbackReason ? { from: "pro", reason: fallbackReason } : null,
+  };
 }
 
 function emptyStateFor(slider: EffortSliderState): PickerState {

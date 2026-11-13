@@ -180,8 +180,14 @@ export interface FakePickerOptions {
   keyStep?: number;
   /** Highest value a key press can reach (a locked Pro step is 3); unset means the range max. */
   keyCeiling?: number;
+  /** How many presses keyCeiling refuses before keys move freely again (unset: always). */
+  keyCeilingPresses?: number;
   /** When the menu closes with the slider above this value, the page puts it back to this value. */
   revertAboveOnClose?: number;
+  /** How many closes revert the value (unset: every close). */
+  revertCloses?: number;
+  /** On the first close, set aria-valuemax to this value (a Pro step that comes back). */
+  restoreMaxOnClose?: string;
   /** Trigger opens but aria-controls names no element. */
   unboundMenu?: boolean;
   /** Model trigger is absent from the composer. */
@@ -240,6 +246,8 @@ export class FakePickerDom {
   readonly list: FakeElement;
   readonly listItem: FakeElement | null = null;
   menuOpen = false;
+  private revertCount = 0;
+  private ceilingRefusals = 0;
   listOpen = false;
   view: "simple" | "advanced" = "simple";
   private selectAllArmed = false;
@@ -454,8 +462,18 @@ export class FakePickerDom {
     if (this.options.escapeIgnored) return;
     this.menuOpen = false;
     const revertTo = this.options.revertAboveOnClose;
-    if (this.slider && revertTo !== undefined && (this.sliderValue ?? 0) > revertTo) {
+    const revertsLeft = (this.options.revertCloses ?? Infinity) - this.revertCount;
+    if (
+      this.slider &&
+      revertTo !== undefined &&
+      revertsLeft > 0 &&
+      (this.sliderValue ?? 0) > revertTo
+    ) {
       this.slider.setAttribute("aria-valuenow", String(revertTo));
+      this.revertCount += 1;
+    }
+    if (this.slider && this.options.restoreMaxOnClose !== undefined) {
+      this.slider.setAttribute("aria-valuemax", this.options.restoreMaxOnClose);
     }
     this.menu.setAttribute("data-state", "closed");
     this.trigger.setAttribute("aria-expanded", "false");
@@ -568,7 +586,9 @@ export class FakePickerDom {
     const step = this.options.keyStep ?? 1;
     const current = this.sliderValue ?? 0;
     const next = key === "ArrowRight" ? current + step : current - step;
-    const ceiling = Math.min(max, this.options.keyCeiling ?? max);
+    const refusalsLeft = (this.options.keyCeilingPresses ?? Infinity) - this.ceilingRefusals;
+    const ceiling = refusalsLeft > 0 ? Math.min(max, this.options.keyCeiling ?? max) : max;
+    if (next > ceiling && current >= ceiling) this.ceilingRefusals += 1;
     this.slider.setAttribute("aria-valuenow", String(Math.max(min, Math.min(ceiling, next))));
   }
 

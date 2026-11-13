@@ -275,7 +275,12 @@ describe("ensureThinkingTime when Pro is unavailable", () => {
       requestedLevel: "pro",
       fallback: { from: "pro", reason: "pro-step-locked" },
     });
-    expect(dom.sentKeys.filter((key) => key === "ArrowRight")).toHaveLength(3);
+    // Two presses reach Extra High, then each of three attempts: refused Right, Left, Right.
+    expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual([
+      "ArrowRight",
+      "ArrowRight",
+      ...Array.from({ length: 3 }, () => ["ArrowRight", "ArrowLeft", "ArrowRight"]).flat(),
+    ]);
     expect(dom.sliderValue).toBe(3);
     expect(dom.menuOpen).toBe(false);
     expect(logs.join("\n")).toContain(
@@ -398,5 +403,64 @@ describe("readEffortSlider", () => {
       ok: false,
       failure: { reason: "composer-not-found" },
     });
+  });
+});
+
+describe("ensureThinkingTime does not mistake a passing hiccup for an unavailable Pro", () => {
+  it("selects Pro when ArrowRight at Extra High is refused once", async () => {
+    vi.useFakeTimers();
+    const { dom, Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "4", value: "1" },
+      keyCeiling: 3,
+      keyCeilingPresses: 1,
+    });
+
+    const result = ensureThinkingTime(Runtime, Input, "pro", logger);
+    await vi.runAllTimersAsync();
+    await expect(result).resolves.toMatchObject({ level: "pro", index: 4, fallback: null });
+    expect(dom.sliderValue).toBe(4);
+  });
+
+  it("selects Pro when the page puts Pro back to Extra High only once", async () => {
+    const { dom, Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "4", value: "3" },
+      revertAboveOnClose: 3,
+      revertCloses: 1,
+    });
+
+    await expect(ensureThinkingTime(Runtime, Input, "pro", logger)).resolves.toMatchObject({
+      level: "pro",
+      index: 4,
+      fallback: null,
+    });
+    expect(dom.sliderValue).toBe(4);
+  });
+
+  it("fails instead of falling back when a missing Pro step comes back", async () => {
+    const { Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "3", value: "2" },
+      restoreMaxOnClose: "4",
+    });
+
+    await expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "pro", logger),
+      "effort-range-changed",
+    );
+  });
+
+  it("fails instead of falling back when the row ignores every key at Extra High", async () => {
+    vi.useFakeTimers();
+    const { Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "4", value: "3" },
+      keyStep: 0,
+    });
+
+    const assertion = expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "pro", logger),
+      "effort-key-no-effect",
+    );
+    await vi.runAllTimersAsync();
+    const error = await assertion;
+    expect((error.details as { key?: string }).key).toBe("ArrowLeft");
   });
 });

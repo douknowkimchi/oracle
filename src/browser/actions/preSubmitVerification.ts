@@ -7,6 +7,7 @@ import { DEFAULT_MODEL_STRATEGY } from "../constants.js";
 import { logDomFailure } from "../domDebug.js";
 import { isModelSubmenuLabel, readModelSubmenuSelection } from "./modelSelection.js";
 import {
+  EFFORT_SLIDER_MAX,
   describeEffortSliderProblem,
   readEffortSlider,
   type EffortSelectionResult,
@@ -127,6 +128,14 @@ export async function verifyComposerBeforeSubmit(
       if (problem) {
         mismatches.push(`effort: ${problem}`);
         diagnostics.effort = effort.state;
+      } else if (
+        effortFallbackReason === "pro-step-absent" &&
+        effort.state.max !== EFFORT_SLIDER_MAX - 1
+      ) {
+        // The fallback was justified by a missing Pro step; it must still be missing.
+        mismatches.push(
+          `effort: Pro step is offered again (range ${effort.state.min}..${effort.state.max})`,
+        );
       } else if (expected !== effectiveEffort) {
         mismatches.push(
           `effort: expected ${effectiveEffort} (${THINKING_TIME_LABELS[effectiveEffort]}), observed index ${observedEffortIndex}`,
