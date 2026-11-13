@@ -188,6 +188,8 @@ export interface FakePickerOptions {
   revertCloses?: number;
   /** On the first close, set aria-valuemax to this value (a Pro step that comes back). */
   restoreMaxOnClose?: string;
+  /** On the first arrow key, set aria-valuemax to this value (a Pro step that appears mid-selection). */
+  restoreMaxOnKey?: string;
   /** Trigger opens but aria-controls names no element. */
   unboundMenu?: boolean;
   /** Model trigger is absent from the composer. */
@@ -581,6 +583,9 @@ export class FakePickerDom {
       return;
     }
     if (this.powerRow.hasAttribute("aria-disabled") || this.options.sliderAlwaysDisabled) return;
+    if (this.options.restoreMaxOnKey !== undefined) {
+      this.slider.setAttribute("aria-valuemax", this.options.restoreMaxOnKey);
+    }
     const min = Number(this.slider.getAttribute("aria-valuemin"));
     const max = Number(this.slider.getAttribute("aria-valuemax"));
     const step = this.options.keyStep ?? 1;

@@ -46,7 +46,7 @@ import {
 } from "./pageActions.js";
 import { INPUT_SELECTORS } from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
-import { ensureThinkingTime } from "./actions/thinkingTime.js";
+import { ensureThinkingTime, isRetryableEffortFailure } from "./actions/thinkingTime.js";
 import {
   clearComposerAfterStop,
   createPreSubmitGate,
@@ -1588,6 +1588,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
             retries: 2,
             delayMs: 300,
+            shouldRetry: isRetryableEffortFailure,
             onRetry: (attempt, error) => {
               if (options.verbose) {
                 logger(
@@ -3250,6 +3251,7 @@ async function runRemoteBrowserMode(
         withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
           retries: 2,
           delayMs: 300,
+          shouldRetry: isRetryableEffortFailure,
           onRetry: (attempt, error) => {
             if (options.verbose) {
               logger(

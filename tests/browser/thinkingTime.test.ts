@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   describeEffortSliderProblem,
   ensureThinkingTime,
+  isRetryableEffortFailure,
   readEffortSlider,
   sliderAdvancedTowardTarget,
 } from "../../src/browser/actions/thinkingTime.js";
 import type { BrowserLogger } from "../../src/browser/types.js";
 import { BrowserAutomationError } from "../../src/oracle/errors.js";
+import { withRetries } from "../../src/browser/utils.js";
 import {
   normalizeThinkingTimeLevel,
   thinkingTimeLevelAtIndex,
@@ -462,5 +464,74 @@ describe("ensureThinkingTime does not mistake a passing hiccup for an unavailabl
     await vi.runAllTimersAsync();
     const error = await assertion;
     expect((error.details as { key?: string }).key).toBe("ArrowLeft");
+  });
+});
+
+describe("ensureThinkingTime keeps evidence across attempts", () => {
+  it("fails without a retry when Pro is refused in different ways", async () => {
+    vi.useFakeTimers();
+    const { Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "4", value: "1" },
+      keyCeiling: 3,
+      keyCeilingPresses: 1,
+      revertAboveOnClose: 3,
+    });
+    let attempts = 0;
+
+    const assertion = expectEffortFailure(
+      withRetries(
+        () => {
+          attempts += 1;
+          return ensureThinkingTime(Runtime, Input, "pro", logger);
+        },
+        { retries: 2, delayMs: 0, shouldRetry: isRetryableEffortFailure },
+      ),
+      "effort-pro-inconsistent",
+    );
+    await vi.runAllTimersAsync();
+    const error = await assertion;
+    expect((error.details as { refusals?: string[] }).refusals).toEqual([
+      "pro-step-locked",
+      "pro-not-kept",
+      "pro-not-kept",
+    ]);
+    expect(attempts).toBe(1);
+  });
+
+  it("drops a missing-Pro-step fallback when the Pro step appears during selection", async () => {
+    const { Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "3", value: "1" },
+      restoreMaxOnKey: "4",
+    });
+
+    await expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "pro", logger),
+      "effort-range-changed",
+    );
+  });
+
+  it("counts only Oracle's own moves to Pro when Pro was already set", async () => {
+    const { dom, Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "4", value: "4" },
+      revertAboveOnClose: 3,
+    });
+
+    await expect(ensureThinkingTime(Runtime, Input, "pro", logger)).resolves.toMatchObject({
+      level: "extra-high",
+      fallback: { from: "pro", reason: "pro-not-kept" },
+    });
+    expect(dom.sentKeys.filter((key) => key === "ArrowRight")).toHaveLength(3);
+  });
+
+  it("lets other effort failures be retried", () => {
+    expect(isRetryableEffortFailure(new Error("transport"))).toBe(true);
+    expect(
+      isRetryableEffortFailure(new BrowserAutomationError("x", { code: "effort-range-changed" })),
+    ).toBe(true);
+    expect(
+      isRetryableEffortFailure(
+        new BrowserAutomationError("x", { code: "effort-pro-inconsistent" }),
+      ),
+    ).toBe(false);
   });
 });

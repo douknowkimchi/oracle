@@ -17,19 +17,21 @@ export interface RetryOptions {
   retries?: number;
   delayMs?: number;
   onRetry?: (attempt: number, error: unknown) => void;
+  /** Return false for a failure that must end the task; it is rethrown without another attempt. */
+  shouldRetry?: (error: unknown) => boolean;
 }
 
 export async function withRetries<T>(
   task: () => Promise<T>,
   options: RetryOptions = {},
 ): Promise<T> {
-  const { retries = 2, delayMs = 250, onRetry } = options;
+  const { retries = 2, delayMs = 250, onRetry, shouldRetry } = options;
   let attempt = 0;
   while (attempt <= retries) {
     try {
       return await task();
     } catch (error) {
-      if (attempt === retries) {
+      if (attempt === retries || shouldRetry?.(error) === false) {
         throw error;
       }
       attempt += 1;

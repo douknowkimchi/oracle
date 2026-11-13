@@ -23,6 +23,19 @@ import {
 /** The current ChatGPT effort slider exposes exactly five steps: Instant..Pro. */
 export const EFFORT_SLIDER_MIN = 0;
 export const EFFORT_SLIDER_MAX = THINKING_TIME_LEVELS.length - 1;
+/**
+ * Failures a retry must not wash out: Pro refused in different ways is evidence about this run,
+ * and starting over would let a later attempt fall back on part of it.
+ */
+const FINAL_EFFORT_FAILURE_CODES: ReadonlySet<string> = new Set(["effort-pro-inconsistent"]);
+
+/** For withRetries: false when the effort owner reported a failure that must end the run. */
+export function isRetryableEffortFailure(error: unknown): boolean {
+  if (!(error instanceof BrowserAutomationError)) return true;
+  const code = (error.details as { code?: unknown } | undefined)?.code;
+  return !(typeof code === "string" && FINAL_EFFORT_FAILURE_CODES.has(code));
+}
+
 /** Slider index of Extra High, the step used when a Pro request cannot reach Pro. */
 const PRO_FALLBACK_INDEX = EFFORT_SLIDER_MAX - 1;
 const KEY_CHANGE_TIMEOUT_MS = 5_000;
@@ -210,7 +223,9 @@ async function selectPro(
   let state = usableSlider(await openEffortView(Runtime, Input), level, true);
   const initial = state.value;
   if (state.max === PRO_FALLBACK_INDEX) {
-    await stepTo(Runtime, Input, state, PRO_FALLBACK_INDEX, level, true);
+    // Every read while relying on the missing step must still show 0..3.
+    const reached = await stepTo(Runtime, Input, state, PRO_FALLBACK_INDEX, level, true, true);
+    requireProStepAbsent(reached);
     await closeOrFail(Runtime, Input, level);
     const confirmed = await confirmSlider(Runtime, Input, level, true);
     if (confirmed.max !== PRO_FALLBACK_INDEX) {
@@ -229,8 +244,14 @@ async function selectPro(
     state = await stepTo(Runtime, Input, state, PRO_FALLBACK_INDEX, level);
   }
   const refusals: ProEffortFallbackReason[] = [];
-  for (let attempt = 0; attempt < PRO_STEP_ATTEMPTS; attempt += 1) {
-    if (state.value !== EFFORT_SLIDER_MAX) {
+  // A Pro value found already set is checked once without counting; only Oracle's own moves to Pro count.
+  for (
+    let round = 0;
+    refusals.length < PRO_STEP_ATTEMPTS && round <= PRO_STEP_ATTEMPTS;
+    round += 1
+  ) {
+    const pressedToPro = state.value !== EFFORT_SLIDER_MAX;
+    if (pressedToPro) {
       const moved = await pressAndRead(Runtime, Input, "ArrowRight", state.value, level);
       if (moved.value === PRO_FALLBACK_INDEX) {
         refusals.push("pro-step-locked");
@@ -252,13 +273,16 @@ async function selectPro(
     if (confirmed.value !== PRO_FALLBACK_INDEX) {
       throw effortMismatch("effort-not-persisted", level, confirmed);
     }
-    refusals.push("pro-not-kept");
+    if (pressedToPro) refusals.push("pro-not-kept");
     state = usableSlider(await openEffortView(Runtime, Input), level);
     if (state.value !== PRO_FALLBACK_INDEX) {
       throw effortMismatch("effort-not-persisted", level, state);
     }
   }
   const reason = refusals[0];
+  if (reason === undefined || refusals.length < PRO_STEP_ATTEMPTS) {
+    throw effortMismatch("effort-not-persisted", level, state);
+  }
   if (refusals.some((entry) => entry !== reason)) {
     throw new EffortSelectionFailure(
       "effort-pro-inconsistent",
@@ -272,6 +296,16 @@ async function selectPro(
     throw effortMismatch("effort-not-persisted", level, confirmed);
   }
   return finishSelection(logger, level, PRO_FALLBACK_INDEX, initial, reason);
+}
+
+function requireProStepAbsent(state: UsableSliderState): void {
+  if (state.max !== PRO_FALLBACK_INDEX) {
+    throw new EffortSelectionFailure(
+      "effort-range-changed",
+      `Thinking time: the slider range changed to 0..${state.max} while relying on a missing Pro step.`,
+      { observed: state },
+    );
+  }
 }
 
 /** After a refused ArrowRight at Extra High: the row must still move 3 -> 2 -> 3. */
@@ -305,6 +339,7 @@ async function stepTo(
   target: number,
   level: ThinkingTimeLevel,
   allowProStepAbsent = false,
+  requireMissingProStep = false,
 ): Promise<UsableSliderState> {
   let state = start;
   for (let presses = 0; state.value !== target; presses += 1) {
@@ -314,6 +349,7 @@ async function stepTo(
     const previous = state.value;
     const key = target > previous ? "ArrowRight" : "ArrowLeft";
     state = await pressAndRead(Runtime, Input, key, previous, level, allowProStepAbsent);
+    if (requireMissingProStep) requireProStepAbsent(state);
     if (!sliderAdvancedTowardTarget(previous, state.value, target)) {
       throw effortMismatch("effort-key-no-effect", level, state, { key, before: previous });
     }
