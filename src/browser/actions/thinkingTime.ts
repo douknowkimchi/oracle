@@ -25,9 +25,14 @@ export const EFFORT_SLIDER_MIN = 0;
 export const EFFORT_SLIDER_MAX = THINKING_TIME_LEVELS.length - 1;
 /**
  * Failures a retry must not wash out: Pro refused in different ways is evidence about this run,
- * and starting over would let a later attempt fall back on part of it.
+ * and starting over would let a later attempt fall back on part of it. Likewise a Pro step seen
+ * while relying on its absence contradicts the missing-step fallback; a retry that reads 0..3
+ * again must not turn that contradiction into a pro-step-absent fallback.
  */
-const FINAL_EFFORT_FAILURE_CODES: ReadonlySet<string> = new Set(["effort-pro-inconsistent"]);
+const FINAL_EFFORT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "effort-pro-inconsistent",
+  "effort-range-changed",
+]);
 
 /** For withRetries: false when the effort owner reported a failure that must end the run. */
 export function isRetryableEffortFailure(error: unknown): boolean {
