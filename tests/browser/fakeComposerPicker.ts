@@ -190,6 +190,11 @@ export interface FakePickerOptions {
   restoreMaxOnClose?: string;
   /** On the first arrow key, set aria-valuemax to this value (a Pro step that appears mid-selection). */
   restoreMaxOnKey?: string;
+  /**
+   * On the first arrow key, the next read shows aria-valuemax at this value with the old slider
+   * value; the read after that shows the original range and the moved value.
+   */
+  flashMaxOnKey?: string;
   /** Trigger opens but aria-controls names no element. */
   unboundMenu?: boolean;
   /** Model trigger is absent from the composer. */
@@ -250,6 +255,9 @@ export class FakePickerDom {
   menuOpen = false;
   private revertCount = 0;
   private ceilingRefusals = 0;
+  private flashed = false;
+  private pendingReads = 0;
+  private pendingKeyEffect: (() => void) | null = null;
   listOpen = false;
   view: "simple" | "advanced" = "simple";
   private selectAllArmed = false;
@@ -591,6 +599,18 @@ export class FakePickerDom {
     const step = this.options.keyStep ?? 1;
     const current = this.sliderValue ?? 0;
     const next = key === "ArrowRight" ? current + step : current - step;
+    if (this.options.flashMaxOnKey !== undefined && !this.flashed) {
+      this.flashed = true;
+      const slider = this.slider;
+      const moved = String(Math.max(min, Math.min(max, next)));
+      slider.setAttribute("aria-valuemax", this.options.flashMaxOnKey);
+      this.pendingReads = 0;
+      this.pendingKeyEffect = () => {
+        slider.setAttribute("aria-valuemax", String(max));
+        slider.setAttribute("aria-valuenow", moved);
+      };
+      return;
+    }
     const refusalsLeft = (this.options.keyCeilingPresses ?? Infinity) - this.ceilingRefusals;
     const ceiling = refusalsLeft > 0 ? Math.min(max, this.options.keyCeiling ?? max) : max;
     if (next > ceiling && current >= ceiling) this.ceilingRefusals += 1;
@@ -616,6 +636,13 @@ export class FakePickerDom {
 
   /** Evaluates a page expression against this DOM the way Runtime.evaluate would. */
   async evaluate(expression: string): Promise<unknown> {
+    if (this.pendingKeyEffect && this.pendingReads >= 1) {
+      const apply = this.pendingKeyEffect;
+      this.pendingKeyEffect = null;
+      apply();
+    } else if (this.pendingKeyEffect) {
+      this.pendingReads += 1;
+    }
     const run = new Function("document", "window", `return ${expression};`);
     return await run(this.documentFacade(), {});
   }

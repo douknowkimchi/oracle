@@ -224,7 +224,7 @@ async function selectPro(
   const initial = state.value;
   if (state.max === PRO_FALLBACK_INDEX) {
     // Every read while relying on the missing step must still show 0..3.
-    const reached = await stepTo(Runtime, Input, state, PRO_FALLBACK_INDEX, level, true, true);
+    const reached = await stepTo(Runtime, Input, state, PRO_FALLBACK_INDEX, level, true);
     requireProStepAbsent(reached);
     await closeOrFail(Runtime, Input, level);
     const confirmed = await confirmSlider(Runtime, Input, level, true);
@@ -254,7 +254,7 @@ async function selectPro(
     if (pressedToPro) {
       const moved = await pressAndRead(Runtime, Input, "ArrowRight", state.value, level);
       if (moved.value === PRO_FALLBACK_INDEX) {
-        refusals.push("pro-step-locked");
+        recordRefusal(refusals, "pro-step-locked");
         state = await proveRowTakesKeys(Runtime, Input, level);
         continue;
       }
@@ -273,7 +273,7 @@ async function selectPro(
     if (confirmed.value !== PRO_FALLBACK_INDEX) {
       throw effortMismatch("effort-not-persisted", level, confirmed);
     }
-    if (pressedToPro) refusals.push("pro-not-kept");
+    if (pressedToPro) recordRefusal(refusals, "pro-not-kept");
     state = usableSlider(await openEffortView(Runtime, Input), level);
     if (state.value !== PRO_FALLBACK_INDEX) {
       throw effortMismatch("effort-not-persisted", level, state);
@@ -283,19 +283,24 @@ async function selectPro(
   if (reason === undefined || refusals.length < PRO_STEP_ATTEMPTS) {
     throw effortMismatch("effort-not-persisted", level, state);
   }
-  if (refusals.some((entry) => entry !== reason)) {
-    throw new EffortSelectionFailure(
-      "effort-pro-inconsistent",
-      "Thinking time: Pro was refused in different ways across attempts.",
-      { refusals },
-    );
-  }
   await closeOrFail(Runtime, Input, level);
   const confirmed = await confirmSlider(Runtime, Input, level, false);
   if (confirmed.value !== PRO_FALLBACK_INDEX) {
     throw effortMismatch("effort-not-persisted", level, confirmed);
   }
   return finishSelection(logger, level, PRO_FALLBACK_INDEX, initial, reason);
+}
+
+/** Records a refusal and ends the run as soon as two different kinds have been seen. */
+function recordRefusal(refusals: ProEffortFallbackReason[], reason: ProEffortFallbackReason): void {
+  refusals.push(reason);
+  if (refusals.some((entry) => entry !== reason)) {
+    throw new EffortSelectionFailure(
+      "effort-pro-inconsistent",
+      "Thinking time: Pro was refused in different ways across attempts.",
+      { refusals: [...refusals] },
+    );
+  }
 }
 
 function requireProStepAbsent(state: UsableSliderState): void {
@@ -339,7 +344,6 @@ async function stepTo(
   target: number,
   level: ThinkingTimeLevel,
   allowProStepAbsent = false,
-  requireMissingProStep = false,
 ): Promise<UsableSliderState> {
   let state = start;
   for (let presses = 0; state.value !== target; presses += 1) {
@@ -349,7 +353,6 @@ async function stepTo(
     const previous = state.value;
     const key = target > previous ? "ArrowRight" : "ArrowLeft";
     state = await pressAndRead(Runtime, Input, key, previous, level, allowProStepAbsent);
-    if (requireMissingProStep) requireProStepAbsent(state);
     if (!sliderAdvancedTowardTarget(previous, state.value, target)) {
       throw effortMismatch("effort-key-no-effect", level, state, { key, before: previous });
     }
@@ -439,10 +442,16 @@ async function waitForSliderChange(
   allowProStepAbsent: boolean,
 ): Promise<UsableSliderState> {
   const deadline = Date.now() + KEY_CHANGE_TIMEOUT_MS;
-  let state = usableSlider(await requireBoundMenu(Runtime), level, allowProStepAbsent);
+  // While a missing Pro step is relied on, every read (not just the last) must still show 0..3.
+  const read = async (): Promise<UsableSliderState> => {
+    const observed = usableSlider(await requireBoundMenu(Runtime), level, allowProStepAbsent);
+    if (allowProStepAbsent) requireProStepAbsent(observed);
+    return observed;
+  };
+  let state = await read();
   while (state.value === previous && Date.now() < deadline) {
     await delay(KEY_CHANGE_POLL_MS);
-    state = usableSlider(await requireBoundMenu(Runtime), level, allowProStepAbsent);
+    state = await read();
   }
   return state;
 }

@@ -490,9 +490,9 @@ describe("ensureThinkingTime keeps evidence across attempts", () => {
     );
     await vi.runAllTimersAsync();
     const error = await assertion;
+    // Ends at the first different refusal, before any further key or picker step can fail first.
     expect((error.details as { refusals?: string[] }).refusals).toEqual([
       "pro-step-locked",
-      "pro-not-kept",
       "pro-not-kept",
     ]);
     expect(attempts).toBe(1);
@@ -510,6 +510,17 @@ describe("ensureThinkingTime keeps evidence across attempts", () => {
     );
   });
 
+  it("drops a missing-Pro-step fallback when a Pro step is read while waiting for a key", async () => {
+    const { Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "3", value: "2" },
+      flashMaxOnKey: "4",
+    });
+
+    await expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "pro", logger),
+      "effort-range-changed",
+    );
+  });
   it("counts only Oracle's own moves to Pro when Pro was already set", async () => {
     const { dom, Runtime, Input, logger } = setup({
       effort: { min: "0", max: "4", value: "4" },
