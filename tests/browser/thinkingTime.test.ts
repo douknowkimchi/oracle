@@ -521,6 +521,70 @@ describe("ensureThinkingTime keeps evidence across attempts", () => {
       "effort-range-changed",
     );
   });
+
+  it("does not let a retry fall back after a Pro step was read while relying on its absence", async () => {
+    // The flash shows 0..4 only on the first attempt; a second attempt would read 0..3 throughout.
+    const { dom, Runtime, Input, logger, logs } = setup({
+      effort: { min: "0", max: "3", value: "2" },
+      flashMaxOnKey: "4",
+    });
+    let attempts = 0;
+    let retries = 0;
+
+    await expectEffortFailure(
+      withRetries(
+        () => {
+          attempts += 1;
+          return ensureThinkingTime(Runtime, Input, "pro", logger);
+        },
+        {
+          retries: 2,
+          delayMs: 0,
+          shouldRetry: isRetryableEffortFailure,
+          onRetry: () => {
+            retries += 1;
+          },
+        },
+      ),
+      "effort-range-changed",
+    );
+    expect(attempts).toBe(1);
+    expect(retries).toBe(0);
+    expect(logs.some((line) => line.includes("Pro unavailable"))).toBe(false);
+    // Selection stopped at the contradicting read, before the slider reached Extra High.
+    expect(dom.sliderValue).toBe(2);
+  });
+
+  it("retries a transient key failure and then selects Pro", async () => {
+    vi.useFakeTimers();
+    const { dom, Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "4", value: "3" },
+      keyStep: 0,
+    });
+    let attempts = 0;
+    let retries = 0;
+
+    const result = withRetries(
+      () => {
+        attempts += 1;
+        return ensureThinkingTime(Runtime, Input, "pro", logger);
+      },
+      {
+        retries: 2,
+        delayMs: 0,
+        shouldRetry: isRetryableEffortFailure,
+        onRetry: () => {
+          retries += 1;
+          dom.options.keyStep = 1;
+        },
+      },
+    );
+    await vi.runAllTimersAsync();
+    await expect(result).resolves.toMatchObject({ level: "pro", index: 4, fallback: null });
+    expect(attempts).toBe(2);
+    expect(retries).toBe(1);
+    expect(dom.sliderValue).toBe(4);
+  });
   it("counts only Oracle's own moves to Pro when Pro was already set", async () => {
     const { dom, Runtime, Input, logger } = setup({
       effort: { min: "0", max: "4", value: "4" },
@@ -537,8 +601,11 @@ describe("ensureThinkingTime keeps evidence across attempts", () => {
   it("lets other effort failures be retried", () => {
     expect(isRetryableEffortFailure(new Error("transport"))).toBe(true);
     expect(
-      isRetryableEffortFailure(new BrowserAutomationError("x", { code: "effort-range-changed" })),
+      isRetryableEffortFailure(new BrowserAutomationError("x", { code: "effort-key-no-effect" })),
     ).toBe(true);
+    expect(
+      isRetryableEffortFailure(new BrowserAutomationError("x", { code: "effort-range-changed" })),
+    ).toBe(false);
     expect(
       isRetryableEffortFailure(
         new BrowserAutomationError("x", { code: "effort-pro-inconsistent" }),
