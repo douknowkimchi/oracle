@@ -178,6 +178,10 @@ export interface FakePickerOptions {
   effort?: { min: string; max: string; value: string } | null;
   /** Key presses move the slider by this many steps (0 simulates an ignored key). */
   keyStep?: number;
+  /** Highest value a key press can reach (a locked Pro step is 3); unset means the range max. */
+  keyCeiling?: number;
+  /** When the menu closes with the slider above this value, the page puts it back to this value. */
+  revertAboveOnClose?: number;
   /** Trigger opens but aria-controls names no element. */
   unboundMenu?: boolean;
   /** Model trigger is absent from the composer. */
@@ -449,6 +453,10 @@ export class FakePickerDom {
   closeMenu(): void {
     if (this.options.escapeIgnored) return;
     this.menuOpen = false;
+    const revertTo = this.options.revertAboveOnClose;
+    if (this.slider && revertTo !== undefined && (this.sliderValue ?? 0) > revertTo) {
+      this.slider.setAttribute("aria-valuenow", String(revertTo));
+    }
     this.menu.setAttribute("data-state", "closed");
     this.trigger.setAttribute("aria-expanded", "false");
     this.trigger.setAttribute("data-state", "closed");
@@ -560,7 +568,8 @@ export class FakePickerDom {
     const step = this.options.keyStep ?? 1;
     const current = this.sliderValue ?? 0;
     const next = key === "ArrowRight" ? current + step : current - step;
-    this.slider.setAttribute("aria-valuenow", String(Math.max(min, Math.min(max, next))));
+    const ceiling = Math.min(max, this.options.keyCeiling ?? max);
+    this.slider.setAttribute("aria-valuenow", String(Math.max(min, Math.min(ceiling, next))));
   }
 
   /** Global document facade passed to page expressions. */

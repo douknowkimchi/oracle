@@ -93,6 +93,8 @@ describe("runBrowserSessionExecution", () => {
       resolvedModelLabel: "GPT-6",
       modelChecked: true,
       requestedEffort: "pro" as const,
+      effectiveEffort: "pro" as const,
+      effortFallbackReason: null,
       observedEffortIndex: 4,
       observedEffortLabel: "Pro",
       effortRangeMin: 0,

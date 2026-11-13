@@ -99,6 +99,8 @@ describe("ensureThinkingTime on the observed Power row", () => {
       index: 4,
       label: "Pro",
       status: "switched",
+      requestedLevel: "pro",
+      fallback: null,
     });
 
     expect(dom.sentKeys).toEqual(["ArrowRight", "ArrowRight", "ArrowRight", "Escape", "Escape"]);
@@ -147,14 +149,14 @@ describe("ensureThinkingTime on the observed Power row", () => {
   });
 
   it("fails before any key press when the slider range is not 0..4", async () => {
-    const { dom, Runtime, Input, logger } = setup({ effort: { min: "0", max: "3", value: "1" } });
+    const { dom, Runtime, Input, logger } = setup({ effort: { min: "0", max: "5", value: "1" } });
 
     const error = await expectEffortFailure(
       ensureThinkingTime(Runtime, Input, "pro", logger),
       "effort-range-invalid",
     );
 
-    expect(error.message).toMatch(/range 0\.\.3/);
+    expect(error.message).toMatch(/range 0\.\.5/);
     expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual([]);
   });
 
@@ -251,6 +253,107 @@ describe("ensureThinkingTime on the observed Power row", () => {
     await expectEffortFailure(
       ensureThinkingTime(Runtime, Input, "extra-high", logger),
       "effort-key-no-effect",
+    );
+  });
+});
+
+describe("ensureThinkingTime when Pro is unavailable", () => {
+  it("runs a Pro request at Extra High when ArrowRight at Extra High does not reach Pro", async () => {
+    vi.useFakeTimers();
+    const { dom, Runtime, Input, logger, logs } = setup({
+      effort: { min: "0", max: "4", value: "1" },
+      keyCeiling: 3,
+    });
+
+    const result = ensureThinkingTime(Runtime, Input, "pro", logger);
+    await vi.runAllTimersAsync();
+    await expect(result).resolves.toEqual({
+      level: "extra-high",
+      index: 3,
+      label: "Extra High",
+      status: "switched",
+      requestedLevel: "pro",
+      fallback: { from: "pro", reason: "pro-step-locked" },
+    });
+    expect(dom.sentKeys.filter((key) => key === "ArrowRight")).toHaveLength(3);
+    expect(dom.sliderValue).toBe(3);
+    expect(dom.menuOpen).toBe(false);
+    expect(logs.join("\n")).toContain(
+      "[browser] Thinking time: Extra High (Pro unavailable: pro-step-locked) [slider 3/4]",
+    );
+  });
+
+  it("runs a Pro request at Extra High when the slider offers only 0..3", async () => {
+    const { dom, Runtime, Input, logger } = setup({ effort: { min: "0", max: "3", value: "2" } });
+
+    await expect(ensureThinkingTime(Runtime, Input, "pro", logger)).resolves.toMatchObject({
+      level: "extra-high",
+      index: 3,
+      fallback: { from: "pro", reason: "pro-step-absent" },
+    });
+    expect(dom.sentKeys.filter((key) => key === "ArrowRight")).toHaveLength(1);
+    expect(dom.sliderValue).toBe(3);
+  });
+
+  it("runs a Pro request at Extra High when the page puts Pro back after the picker closes", async () => {
+    const { dom, Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "4", value: "3" },
+      revertAboveOnClose: 3,
+    });
+
+    await expect(ensureThinkingTime(Runtime, Input, "pro", logger)).resolves.toMatchObject({
+      level: "extra-high",
+      index: 3,
+      status: "already-selected",
+      fallback: { from: "pro", reason: "pro-not-kept" },
+    });
+    expect(dom.sliderValue).toBe(3);
+  });
+
+  it("still fails a Pro request when the slider sticks below Extra High", async () => {
+    vi.useFakeTimers();
+    const { dom, Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "4", value: "1" },
+      keyCeiling: 2,
+    });
+
+    const assertion = expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "pro", logger),
+      "effort-key-no-effect",
+    );
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(dom.sliderValue).toBe(2);
+  });
+
+  it("still fails a Pro request when the whole slider is locked", async () => {
+    const { dom, Runtime, Input, logger } = setup({ sliderAlwaysDisabled: true });
+
+    await expectEffortFailure(ensureThinkingTime(Runtime, Input, "pro", logger), "effort-disabled");
+    expect(dom.sentKeys.filter((key) => key.startsWith("Arrow"))).toEqual([]);
+  });
+
+  it("never falls back for other requested levels", async () => {
+    vi.useFakeTimers();
+    const { Runtime, Input, logger } = setup({
+      effort: { min: "0", max: "4", value: "1" },
+      keyCeiling: 2,
+    });
+
+    const assertion = expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "extra-high", logger),
+      "effort-key-no-effect",
+    );
+    await vi.runAllTimersAsync();
+    await assertion;
+  });
+
+  it("keeps rejecting a 0..3 slider when Pro was not requested", async () => {
+    const { Runtime, Input, logger } = setup({ effort: { min: "0", max: "3", value: "2" } });
+
+    await expectEffortFailure(
+      ensureThinkingTime(Runtime, Input, "high", logger),
+      "effort-range-invalid",
     );
   });
 });

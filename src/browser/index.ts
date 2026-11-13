@@ -1583,7 +1583,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
     const deepResearch = config.researchMode === "deep";
     if (shouldApplyThinkingTimeSelection(config)) {
-      await guardPreSendSelection(preSubmitGate, "thinking-time", 0, () =>
+      const effortSelection = await guardPreSendSelection(preSubmitGate, "thinking-time", 0, () =>
         raceWithDisconnect(
           withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
             retries: 2,
@@ -1598,6 +1598,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           }),
         ),
       );
+      preSubmitGate?.recordEffortSelection(effortSelection);
     }
     const profileLockTimeoutMs = manualLogin ? (config.profileLockTimeoutMs ?? 0) : 0;
     let profileLock: ProfileRunLock | null = null;
@@ -3245,7 +3246,7 @@ async function runRemoteBrowserMode(
     }
     const deepResearch = config.researchMode === "deep";
     if (shouldApplyThinkingTimeSelection(config)) {
-      await guardPreSendSelection(preSubmitGate, "thinking-time", 0, () =>
+      const effortSelection = await guardPreSendSelection(preSubmitGate, "thinking-time", 0, () =>
         withRetries(() => ensureThinkingTime(Runtime, Input, config.thinkingTime, logger), {
           retries: 2,
           delayMs: 300,
@@ -3258,6 +3259,7 @@ async function runRemoteBrowserMode(
           },
         }),
       );
+      preSubmitGate?.recordEffortSelection(effortSelection);
     }
     const submitOnce = async (prompt: string, submissionAttachments: BrowserAttachment[]) => {
       const baselineSnapshot = await readAssistantSnapshot(Runtime).catch(() => null);

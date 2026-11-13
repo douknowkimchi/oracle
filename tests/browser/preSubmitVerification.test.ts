@@ -136,6 +136,8 @@ describe("verifyComposerBeforeSubmit", () => {
       resolvedModelLabel: "GPT-6",
       modelChecked: true,
       requestedEffort: "pro",
+      effectiveEffort: "pro",
+      effortFallbackReason: null,
       observedEffortIndex: 4,
       observedEffortLabel: "Pro",
       effortRangeMin: 0,
@@ -501,6 +503,44 @@ describe("final check at the send boundary", () => {
 });
 
 describe("pre-submit gate state", () => {
+  it("verifies a Pro request at Extra High after the effort owner reported Pro unavailable", async () => {
+    const { dom, Runtime, Input, logger, logs } = setup({
+      effort: { min: "0", max: "4", value: "1" },
+      keyCeiling: 3,
+    });
+    const gate = createPreSubmitGate(Runtime, Input, PLAN, logger);
+
+    const decision = await withFakeTimers(async () => {
+      const effort = await gate.guardSelection("thinking-time", 0, () =>
+        ensureThinkingTime(Runtime, Input, "pro", logger),
+      );
+      gate.recordEffortSelection(effort);
+      return gate.beforeSend({ attachmentCount: 0 })();
+    });
+
+    expect(decision).toBe("send");
+    expect(gate.evidence).toMatchObject({
+      requestedEffort: "pro",
+      effectiveEffort: "extra-high",
+      effortFallbackReason: "pro-step-locked",
+      observedEffortIndex: 3,
+      observedEffortLabel: "Extra High",
+      verified: true,
+      mismatches: [],
+    });
+    expect(dom.sliderValue).toBe(3);
+    expect(logs.join("\n")).toContain('"effortFallback":"pro -> extra-high (pro-step-locked)"');
+  });
+
+  it("still fails a Pro request whose slider sits at Extra High without a reported fallback", async () => {
+    const { Runtime, Input, logger } = setup({ effort: { min: "0", max: "4", value: "3" } });
+    const gate = createPreSubmitGate(Runtime, Input, PLAN, logger);
+
+    const evidence = await verificationFailure(gate.beforeSend({ attachmentCount: 0 })());
+
+    expect(evidence).toMatchObject({ effectiveEffort: "pro", effortFallbackReason: null });
+    expect(evidence.mismatches.join(" ")).toContain("expected pro (Pro), observed index 3");
+  });
   it("hands passing evidence to onVerified before the send decision is returned", async () => {
     const { Runtime, Input, logger } = setup();
     const order: string[] = [];
@@ -632,7 +672,7 @@ describe("selection failures before send", () => {
   });
 
   it("records the slider an effort selection failure actually read", async () => {
-    const { Runtime, Input, logger } = setup({ effort: { min: "0", max: "3", value: "3" } });
+    const { Runtime, Input, logger } = setup({ effort: { min: "0", max: "2", value: "2" } });
     const gate = createPreSubmitGate(Runtime, Input, PLAN, logger);
 
     const error = await caught(
@@ -643,10 +683,10 @@ describe("selection failures before send", () => {
 
     expect(selectionEvidence(error)).toMatchObject({
       requestedEffort: "pro",
-      observedEffortIndex: 3,
-      observedEffortLabel: "Extra High",
+      observedEffortIndex: 2,
+      observedEffortLabel: "High",
       effortRangeMin: 0,
-      effortRangeMax: 3,
+      effortRangeMax: 2,
     });
   });
 

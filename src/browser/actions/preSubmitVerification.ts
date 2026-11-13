@@ -9,6 +9,7 @@ import { isModelSubmenuLabel, readModelSubmenuSelection } from "./modelSelection
 import {
   describeEffortSliderProblem,
   readEffortSlider,
+  type EffortSelectionResult,
   type EffortSliderState,
 } from "./thinkingTime.js";
 import { readDeepResearchComposerToken } from "./deepResearch.js";
@@ -72,9 +73,17 @@ export async function verifyComposerBeforeSubmit(
   plan: PreSubmitPlan,
   submission: { attachmentCount: number },
   logger: BrowserLogger,
+  effortSelection: EffortSelectionResult | null = null,
 ): Promise<BrowserPreSubmitVerification> {
   const mismatches: string[] = [];
   const diagnostics: Record<string, unknown> = {};
+  // The effort owner's confirmed level: the request itself, or Extra High for a Pro fallback.
+  const effectiveEffort = plan.requestedEffort
+    ? (effortSelection?.level ?? plan.requestedEffort)
+    : null;
+  const effortFallbackReason = plan.requestedEffort
+    ? (effortSelection?.fallback?.reason ?? null)
+    : null;
 
   let resolvedModelLabel: string | null = null;
   let modelChecked = false;
@@ -102,7 +111,7 @@ export async function verifyComposerBeforeSubmit(
   let observedEffortIndex: number | null = null;
   let effortRangeMin: number | null = null;
   let effortRangeMax: number | null = null;
-  if (plan.requestedEffort) {
+  if (effectiveEffort) {
     const effort = await readEffortSlider(Runtime, Input);
     if (!effort.ok) {
       mismatches.push(`effort: could not read the slider (${effort.failure.reason})`);
@@ -111,14 +120,16 @@ export async function verifyComposerBeforeSubmit(
       observedEffortIndex = effort.state.value;
       effortRangeMin = effort.state.min;
       effortRangeMax = effort.state.max;
-      const problem = describeEffortSliderProblem(effort.state);
+      const problem = describeEffortSliderProblem(effort.state, {
+        allowProStepAbsent: effortFallbackReason === "pro-step-absent",
+      });
       const expected = thinkingTimeLevelAtIndex(observedEffortIndex ?? -1);
       if (problem) {
         mismatches.push(`effort: ${problem}`);
         diagnostics.effort = effort.state;
-      } else if (expected !== plan.requestedEffort) {
+      } else if (expected !== effectiveEffort) {
         mismatches.push(
-          `effort: expected ${plan.requestedEffort} (${THINKING_TIME_LABELS[plan.requestedEffort]}), observed index ${observedEffortIndex}`,
+          `effort: expected ${effectiveEffort} (${THINKING_TIME_LABELS[effectiveEffort]}), observed index ${observedEffortIndex}`,
         );
       }
     }
@@ -150,6 +161,8 @@ export async function verifyComposerBeforeSubmit(
     resolvedModelLabel,
     modelChecked,
     requestedEffort: plan.requestedEffort,
+    effectiveEffort,
+    effortFallbackReason,
     observedEffortIndex,
     observedEffortLabel: observedLevel ? THINKING_TIME_LABELS[observedLevel] : null,
     effortRangeMin,
@@ -167,6 +180,9 @@ export async function verifyComposerBeforeSubmit(
       `[browser] Pre-submit verification passed: ${JSON.stringify({
         model: resolvedModelLabel,
         effort: evidence.observedEffortLabel,
+        ...(effortFallbackReason
+          ? { effortFallback: `pro -> ${effectiveEffort} (${effortFallbackReason})` }
+          : {}),
         deepResearchToken: token.present,
         attachments: submission.attachmentCount,
       })}`,
@@ -211,6 +227,11 @@ export interface PreSubmitGate {
    * no check can claim that nothing was sent or replace the session evidence.
    */
   markSendInput: () => void;
+  /**
+   * Records the effort owner's confirmed result. The final check then expects that level, so a
+   * Pro request that fell back to Extra High is verified at Extra High and says why.
+   */
+  recordEffortSelection: (result: EffortSelectionResult) => void;
   readonly evidence: BrowserPreSubmitVerification | undefined;
   readonly stopped: boolean;
 }
@@ -232,15 +253,23 @@ export function createPreSubmitGate(
   let evidence: BrowserPreSubmitVerification | undefined;
   let stopped = false;
   let sendInputSent = false;
+  let effortSelection: EffortSelectionResult | null = null;
   return {
     beforeSend: (submission) => async () => {
       // Decided per call: once any send input went out, a failing check (follow-up prompt or a
       // retry) blocks this send without claiming nothing was sent or touching the evidence.
       if (sendInputSent) {
-        await verifyLaterSubmission(Runtime, Input, plan, submission, logger);
+        await verifyLaterSubmission(Runtime, Input, plan, submission, logger, effortSelection);
         return "send";
       }
-      const passing = await verifyComposerBeforeSubmit(Runtime, Input, plan, submission, logger);
+      const passing = await verifyComposerBeforeSubmit(
+        Runtime,
+        Input,
+        plan,
+        submission,
+        logger,
+        effortSelection,
+      );
       evidence = passing;
       options.onVerified?.(passing);
       if (plan.stopBeforeSubmit) {
@@ -251,6 +280,9 @@ export function createPreSubmitGate(
     },
     markSendInput: () => {
       sendInputSent = true;
+    },
+    recordEffortSelection: (result) => {
+      effortSelection = result;
     },
     guardSelection: async (stage, attachmentCount, action) => {
       try {
@@ -300,9 +332,10 @@ async function verifyLaterSubmission(
   plan: PreSubmitPlan,
   submission: { attachmentCount: number },
   logger: BrowserLogger,
+  effortSelection: EffortSelectionResult | null,
 ): Promise<void> {
   try {
-    await verifyComposerBeforeSubmit(Runtime, Input, plan, submission, logger);
+    await verifyComposerBeforeSubmit(Runtime, Input, plan, submission, logger, effortSelection);
   } catch (error) {
     const laterEvidence = readPreSubmitEvidence(error);
     if (!laterEvidence) throw error;
@@ -355,6 +388,8 @@ function buildSelectionFailureEvidence(
     resolvedModelLabel: null,
     modelChecked: false,
     requestedEffort: plan.requestedEffort,
+    effectiveEffort: null,
+    effortFallbackReason: null,
     observedEffortIndex: observedIndex,
     observedEffortLabel: observedLevel ? THINKING_TIME_LABELS[observedLevel] : null,
     effortRangeMin: typeof observed?.min === "number" ? observed.min : null,

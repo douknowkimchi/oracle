@@ -146,6 +146,13 @@ export interface BrowserPreSubmitVerification {
   resolvedModelLabel: string | null;
   modelChecked: boolean;
   requestedEffort: ThinkingTimeLevel | null;
+  /**
+   * Level the final check expected: the requested level, or Extra High when a Pro request fell
+   * back because the picker showed Pro as unavailable. Null when no effort was requested.
+   */
+  effectiveEffort: ThinkingTimeLevel | null;
+  /** Why a Pro request ran at Extra High (pro-step-absent | pro-step-locked | pro-not-kept). */
+  effortFallbackReason: string | null;
   observedEffortIndex: number | null;
   observedEffortLabel: string | null;
   effortRangeMin: number | null;
