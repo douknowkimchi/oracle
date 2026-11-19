@@ -22,7 +22,10 @@ import {
 import { resolveBrowserConfig } from "./config.js";
 import { clearStaleChatGptConversationCookies, syncCookies } from "./cookies.js";
 import { CHATGPT_URL } from "./constants.js";
-import { buildConversationTurnListExpression } from "./conversationTurns.js";
+import {
+  buildConversationTurnListExpression,
+  buildConversationTurnRoleFunction,
+} from "./conversationTurns.js";
 import { cleanupStaleProfileState } from "./profileState.js";
 import { readDevToolsActivePortInfo } from "./detect.js";
 import {
@@ -427,11 +430,10 @@ async function readPromptPreviewTurnIndex(
       if (!needle) return null;
       const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
       const turns = ${buildConversationTurnListExpression()};
+      const turnRole = ${buildConversationTurnRoleFunction()};
       let matched = null;
       for (const [index, node] of turns.entries()) {
-        const attr = (node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
-        const isUser = attr === 'user' || Boolean(node.querySelector('[data-message-author-role="user"]'));
-        if (!isUser) continue;
+        if (turnRole(node) !== 'user') continue;
         const text = normalize(node.innerText || node.textContent || '');
         if (text.length > 0 && (text.includes(needle) || needle.includes(text.slice(0, needle.length)))) {
           matched = index;

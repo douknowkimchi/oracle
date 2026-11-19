@@ -5,6 +5,10 @@ import {
   CONVERSATION_TURN_SELECTOR,
   STOP_BUTTON_SELECTORS,
 } from "../constants.js";
+import {
+  buildConversationTurnListExpression,
+  buildConversationTurnRoleFunction,
+} from "../conversationTurns.js";
 
 const THINKING_STALE_HINT_MS = 10 * 60_000;
 
@@ -250,18 +254,10 @@ function buildThinkingStatusExpression(): string {
     };
     const isComposerAdjacent = (node) =>
       Boolean(node.closest?.('[contenteditable="true"], textarea, [data-testid*="composer"], [id*="composer"]'));
-    const isAssistantTurn = (node) => {
-      if (!(node instanceof HTMLElement)) return false;
-      const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
-      if (turnAttr === 'assistant') return true;
-      const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
-      if (role === 'assistant') return true;
-      const testId = (node.getAttribute('data-testid') || '').toLowerCase();
-      if (testId.includes('assistant')) return true;
-      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
-    };
+    const turnRole = ${buildConversationTurnRoleFunction()};
+    const isAssistantTurn = (node) => node instanceof HTMLElement && turnRole(node) === 'assistant';
     const latestAssistantTurn = () => {
-      const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+      const turns = ${buildConversationTurnListExpression()};
       for (let index = turns.length - 1; index >= 0; index -= 1) {
         if (isAssistantTurn(turns[index])) {
           return turns[index];
@@ -593,7 +589,7 @@ function buildThinkingActivityPredicateJs(fnName: string, detailed: boolean): st
     // then hold thinkingActive true until the watchdog timeout on a completed response. The
     // sidecar check below covers verified reasoning panels; here only the latest turn counts.
     const turns = (() => {
-      try { return document.querySelectorAll(CONVERSATION_SELECTOR); } catch { return []; }
+      try { return ${buildConversationTurnListExpression()}; } catch { return []; }
     })();
     const lastTurn = turns.length ? turns[turns.length - 1] : null;
     if (

@@ -5,11 +5,11 @@ import {
   PROMPT_FALLBACK_SELECTOR,
   SEND_BUTTON_SELECTORS,
   STOP_BUTTON_SELECTOR,
-  ASSISTANT_ROLE_SELECTOR,
 } from "../constants.js";
 import {
   buildConversationTurnCountExpression,
   buildConversationTurnListExpression,
+  buildConversationTurnRoleFunction,
 } from "../conversationTurns.js";
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
@@ -843,6 +843,14 @@ function sendButtonTimeoutMs(
     : 45_000;
 }
 
+/**
+ * Confirms the send by a user message that appeared after the pre-send baseline and carries the
+ * prompt. Returns that message's turn count (index + 1) so later reads scope to the same turn.
+ *
+ * An earlier identical prompt, an assistant echo, a cleared composer, a stop button or a URL
+ * change are recorded as diagnostics only; none of them confirms a send. Without a baseline the
+ * new message cannot be told apart from an older one, so the check fails instead of guessing.
+ */
 async function verifyPromptCommitted(
   Runtime: ChromeClient["Runtime"],
   prompt: string,
@@ -856,7 +864,6 @@ async function verifyPromptCommitted(
   const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
   const inputSelectorsLiteral = JSON.stringify(INPUT_SELECTORS);
   const stopSelectorLiteral = JSON.stringify(STOP_BUTTON_SELECTOR);
-  const assistantSelectorLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   let baseline: number | null =
     typeof baselineTurns === "number" && Number.isFinite(baselineTurns) && baselineTurns >= 0
       ? Math.floor(baselineTurns)
@@ -891,8 +898,12 @@ async function verifyPromptCommitted(
 	    };
 	    const normalizedPrompt = normalize(${encodedPrompt});
 	    const normalizedPromptPrefix = normalizedPrompt.slice(0, 120);
-	    const articles = ${buildConversationTurnListExpression()};
-	    const normalizedTurns = articles.map((node) => normalize(node?.innerText));
+	    const turnRole = ${buildConversationTurnRoleFunction()};
+	    const turns = (${buildConversationTurnListExpression()}).map((node, index) => ({
+	      index,
+	      role: turnRole(node),
+	      text: normalize(node?.innerText),
+	    }));
 	    const readValue = (node) => {
 	      if (!node) return '';
 	      if (node instanceof HTMLTextAreaElement) return node.value ?? '';
@@ -908,24 +919,16 @@ async function verifyPromptCommitted(
 	      .filter((node) => Boolean(node));
 	    const visibleInputs = inputs.filter((node) => isVisible(node));
 	    const activeInputs = visibleInputs.length > 0 ? visibleInputs : inputs;
-	    const userMatched =
-	      normalizedPrompt.length > 0 && normalizedTurns.some((text) => text.includes(normalizedPrompt));
-	    const prefixMatched =
-	      normalizedPromptPrefix.length > 30 &&
-	      normalizedTurns.some((text) => text.includes(normalizedPromptPrefix));
-		    const lastTurn = normalizedTurns[normalizedTurns.length - 1] ?? '';
-		    const lastMatched =
-		      normalizedPrompt.length > 0 &&
-		      (lastTurn.includes(normalizedPrompt) ||
-		        (normalizedPromptPrefix.length > 30 && lastTurn.includes(normalizedPromptPrefix)));
 		    const baseline = ${baselineLiteral};
-		    const hasNewTurn = baseline < 0 ? false : normalizedTurns.length > baseline;
+	    const carriesPrompt = (text) =>
+	      normalizedPrompt.length > 0 &&
+	      (text.includes(normalizedPrompt) ||
+	        (normalizedPromptPrefix.length > 30 && text.includes(normalizedPromptPrefix)));
+	    const userTurns = turns.filter((turn) => turn.role === 'user');
+	    const newUserTurns = baseline < 0 ? [] : userTurns.filter((turn) => turn.index >= baseline);
+	    const matchedUserTurn = newUserTurns.filter((turn) => carriesPrompt(turn.text)).at(-1) ?? null;
+	    const lastUser = userTurns.at(-1)?.text ?? '';
 		    const stopVisible = Boolean(document.querySelector(${stopSelectorLiteral}));
-		    const assistantVisible = Boolean(
-		      document.querySelector(${assistantSelectorLiteral}) ||
-		      document.querySelector('[data-testid*="assistant"]'),
-		    );
-	    // Learned: composer clearing + stop button or assistant presence is a reliable fallback signal.
       const editorValue = editor?.innerText ?? '';
       const fallbackValue = fallback?.value ?? '';
       const activeEmpty =
@@ -935,19 +938,18 @@ async function verifyPromptCommitted(
       const inConversation = /\\/c\\//.test(href);
 		    return {
         baseline,
-	      userMatched,
-	      prefixMatched,
-	      lastMatched,
-	      hasNewTurn,
+	      matchedUserIndex: matchedUserTurn ? matchedUserTurn.index : -1,
+	      newUserTurns: newUserTurns.length,
+	      priorUserMatched: userTurns.some((turn) => turn.index < baseline && carriesPrompt(turn.text)),
+	      assistantEchoMatched: turns.some((turn) => turn.role === 'assistant' && carriesPrompt(turn.text)),
 	      stopVisible,
-      assistantVisible,
       composerCleared,
       inConversation,
       href,
       fallbackValue,
       editorValue,
-      lastTurn,
-      turnsCount: normalizedTurns.length,
+      lastUser,
+      turnsCount: turns.length,
     };
   })()`;
 
@@ -958,19 +960,9 @@ async function verifyPromptCommitted(
     if (info && typeof info === "object") {
       lastProbe = info;
     }
-    const turnsCount = (result.value as { turnsCount?: number } | undefined)?.turnsCount;
-    const matchesPrompt = Boolean(info?.lastMatched || info?.userMatched || info?.prefixMatched);
-    const baselineUnknown =
-      typeof info?.baseline === "number" ? info.baseline < 0 : baselineLiteral < 0;
-    if (matchesPrompt && (baselineUnknown || info?.hasNewTurn)) {
-      return typeof turnsCount === "number" && Number.isFinite(turnsCount) ? turnsCount : null;
-    }
-    const fallbackCommit =
-      info?.composerCleared &&
-      Boolean(info?.hasNewTurn) &&
-      ((info?.stopVisible ?? false) || info?.assistantVisible || info?.inConversation);
-    if (fallbackCommit) {
-      return typeof turnsCount === "number" && Number.isFinite(turnsCount) ? turnsCount : null;
+    const matchedIndex = info?.matchedUserIndex;
+    if (typeof matchedIndex === "number" && Number.isInteger(matchedIndex) && matchedIndex >= 0) {
+      return matchedIndex + 1;
     }
     await delay(100);
   }
@@ -1009,19 +1001,18 @@ async function verifyPromptCommitted(
 
 interface CommitProbeState {
   baseline?: number;
-  userMatched?: boolean;
-  prefixMatched?: boolean;
-  lastMatched?: boolean;
-  hasNewTurn?: boolean;
+  matchedUserIndex?: number;
+  newUserTurns?: number;
+  priorUserMatched?: boolean;
+  assistantEchoMatched?: boolean;
   stopVisible?: boolean;
-  assistantVisible?: boolean;
   composerCleared?: boolean;
   inConversation?: boolean;
   turnsCount?: number;
   href?: string;
   editorValue?: string;
   fallbackValue?: string;
-  lastTurn?: string;
+  lastUser?: string;
 }
 
 // Keep booleans/counts but replace free text with lengths so session metadata stays lean.
@@ -1029,16 +1020,15 @@ function summarizeCommitProbe(probe: CommitProbeState): Record<string, unknown> 
   return {
     baseline: probe.baseline,
     turnsCount: probe.turnsCount,
-    userMatched: probe.userMatched,
-    prefixMatched: probe.prefixMatched,
-    lastMatched: probe.lastMatched,
-    hasNewTurn: probe.hasNewTurn,
+    matchedUserIndex: probe.matchedUserIndex,
+    newUserTurns: probe.newUserTurns,
+    priorUserMatched: probe.priorUserMatched,
+    assistantEchoMatched: probe.assistantEchoMatched,
     stopVisible: probe.stopVisible,
-    assistantVisible: probe.assistantVisible,
     composerCleared: probe.composerCleared,
     inConversation: probe.inConversation,
     editorLength: typeof probe.editorValue === "string" ? probe.editorValue.length : undefined,
-    lastTurnLength: typeof probe.lastTurn === "string" ? probe.lastTurn.length : undefined,
+    lastUserLength: typeof probe.lastUser === "string" ? probe.lastUser.length : undefined,
   };
 }
 

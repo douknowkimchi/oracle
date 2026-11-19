@@ -3,14 +3,17 @@ import { createHash } from "node:crypto";
 import type { SessionMetadata, BrowserHarvestState } from "../sessionStore.js";
 import {
   ANSWER_SELECTORS,
-  ASSISTANT_ROLE_SELECTOR,
   INPUT_SELECTORS,
   MODEL_BUTTON_SELECTOR,
   SEND_BUTTON_SELECTORS,
   STOP_BUTTON_SELECTOR,
+  USER_ROLE_SELECTOR,
 } from "./constants.js";
 import { captureAssistantMarkdown, readAssistantSnapshot } from "./actions/assistantResponse.js";
-import { buildConversationTurnListExpression } from "./conversationTurns.js";
+import {
+  buildConversationTurnListExpression,
+  buildConversationTurnRoleFunction,
+} from "./conversationTurns.js";
 import { extractStableConversationIdFromUrl } from "./conversationUrl.js";
 import { delay } from "./utils.js";
 
@@ -146,14 +149,12 @@ function buildTabInspectionExpression(): string {
   const inputSelectorsLiteral = JSON.stringify(INPUT_SELECTORS);
   const sendSelectorsLiteral = JSON.stringify(SEND_BUTTON_SELECTORS);
   const answerSelectorsLiteral = JSON.stringify(ANSWER_SELECTORS);
-  const assistantRoleLiteral = escapeLiteral(ASSISTANT_ROLE_SELECTOR);
   const modelButtonSelectorLiteral = escapeLiteral(MODEL_BUTTON_SELECTOR);
   const stopSelectorLiteral = escapeLiteral(STOP_BUTTON_SELECTOR);
   return `(() => {
       const INPUT_SELECTORS = ${inputSelectorsLiteral};
       const SEND_SELECTORS = ${sendSelectorsLiteral};
       const ANSWER_SELECTORS = ${answerSelectorsLiteral};
-      const ASSISTANT_ROLE_SELECTOR = ${assistantRoleLiteral};
       const MODEL_BUTTON_SELECTOR = ${modelButtonSelectorLiteral};
       const STOP_BUTTON_SELECTOR = ${stopSelectorLiteral};
       const LOGIN_CTA = ${LOGIN_CTA_PATTERN.toString()};
@@ -184,21 +185,12 @@ function buildTabInspectionExpression(): string {
       const promptNode = firstVisible(INPUT_SELECTORS);
       const promptReady = Boolean(promptNode);
       const turns = ${buildConversationTurnListExpression()};
-      const assistantTurns = turns.filter((turn) => {
-        const role = normalize(turn.getAttribute('data-message-author-role') || turn.getAttribute('data-turn')).toLowerCase();
-        if (role === 'assistant') return true;
-        return Boolean(turn.querySelector(ASSISTANT_ROLE_SELECTOR));
-      });
+      const turnRole = ${buildConversationTurnRoleFunction()};
+      const assistantTurns = turns.filter((turn) => turnRole(turn) === 'assistant');
       const fallbackUserTurns = Array.from(
-        document.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'),
+        document.querySelectorAll(${JSON.stringify(USER_ROLE_SELECTOR)}),
       );
-      const userTurns = turns.filter((turn) => {
-        const role = normalize(turn.getAttribute('data-message-author-role') || turn.getAttribute('data-turn')).toLowerCase();
-        if (role === 'user') return true;
-        return Boolean(
-          turn.querySelector('[data-message-author-role="user"], [data-turn="user"]'),
-        );
-      });
+      const userTurns = turns.filter((turn) => turnRole(turn) === 'user');
       const answerNode = ANSWER_SELECTORS
         .map((selector) => document.querySelectorAll(selector))
         .find((matches) => matches && matches.length > 0);

@@ -8,7 +8,10 @@ import type {
   SavedBrowserImage,
 } from "./types.js";
 import { ASSISTANT_ROLE_SELECTOR } from "./constants.js";
-import { buildConversationTurnListExpression } from "./conversationTurns.js";
+import {
+  buildConversationTurnListExpression,
+  buildConversationTurnRoleFunction,
+} from "./conversationTurns.js";
 import { delay } from "./utils.js";
 import { readAssistantSnapshot } from "./pageActions.js";
 import { getOracleHomeDir } from "../oracleHome.js";
@@ -100,16 +103,8 @@ function buildAssistantImageExpression(minTurnIndex?: number): string {
         width: img.naturalWidth || 0,
         height: img.naturalHeight || 0,
       }));
-    const isAssistantTurn = (node) => {
-      if (!(node instanceof HTMLElement)) return false;
-      const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
-      if (turnAttr === 'assistant') return true;
-      const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
-      if (role === 'assistant') return true;
-      const testId = (node.getAttribute('data-testid') || '').toLowerCase();
-      if (testId.includes('assistant')) return true;
-      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
-    };
+    const turnRole = ${buildConversationTurnRoleFunction()};
+    const isAssistantTurn = (node) => node instanceof HTMLElement && turnRole(node) === 'assistant';
     const turns = ${buildConversationTurnListExpression()};
     for (let index = turns.length - 1; index >= 0; index -= 1) {
       const turn = turns[index];

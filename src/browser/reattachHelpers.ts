@@ -1,6 +1,9 @@
 import type { BrowserLogger, ChromeClient } from "./types.js";
-import { CONVERSATION_TURN_SELECTOR } from "./constants.js";
-import { buildConversationTurnCountExpression } from "./conversationTurns.js";
+import { USER_ROLE_SELECTOR } from "./constants.js";
+import {
+  buildConversationTurnCountExpression,
+  buildConversationTurnListExpression,
+} from "./conversationTurns.js";
 import { extractStableConversationIdFromUrl } from "./conversationUrl.js";
 import { delay } from "./utils.js";
 import { readAssistantSnapshot } from "./pageActions.js";
@@ -245,7 +248,6 @@ export async function waitForPromptPreview(
   const needleShort = needleFull.replace(/\\s*\\d{4,}\\s*$/, "").trim();
   const needles = Array.from(new Set([needleFull, needleShort].filter(Boolean)));
   if (needles.length === 0) return false;
-  const selectorLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
   const expression = `(() => {
     const needles = ${JSON.stringify(needles)};
     const root =
@@ -254,7 +256,7 @@ export async function waitForPromptPreview(
       document.querySelector('main') ||
       document.querySelector('[role="main"]');
     if (!root) return false;
-    const userTurns = Array.from(root.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'));
+    const userTurns = Array.from(root.querySelectorAll(${JSON.stringify(USER_ROLE_SELECTOR)}));
     const collectText = (nodes) =>
       nodes
         .map((node) => (node.innerText || node.textContent || ''))
@@ -263,7 +265,7 @@ export async function waitForPromptPreview(
     let text = collectText(userTurns);
     let hasTurns = userTurns.length > 0;
     if (!text) {
-      const turns = Array.from(root.querySelectorAll(${selectorLiteral}));
+      const turns = ${buildConversationTurnListExpression("root")};
       hasTurns = hasTurns || turns.length > 0;
       text = collectText(turns);
     }

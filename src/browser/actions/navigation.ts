@@ -1,10 +1,6 @@
 import type { ChromeClient, BrowserLogger } from "../types.js";
-import {
-  CLOUDFLARE_SCRIPT_SELECTOR,
-  CLOUDFLARE_TITLE,
-  CONVERSATION_TURN_SELECTOR,
-  INPUT_SELECTORS,
-} from "../constants.js";
+import { CLOUDFLARE_SCRIPT_SELECTOR, CLOUDFLARE_TITLE, INPUT_SELECTORS } from "../constants.js";
+import { buildConversationTurnCountExpression } from "../conversationTurns.js";
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { BrowserAutomationError } from "../../oracle/errors.js";
@@ -671,9 +667,7 @@ export async function waitForResumedConversationHydration(
     let turns = 0;
     try {
       const { result } = await Runtime.evaluate({
-        expression: `document.querySelectorAll(${JSON.stringify(
-          CONVERSATION_TURN_SELECTOR,
-        )}).length`,
+        expression: buildConversationTurnCountExpression(),
         returnByValue: true,
       });
       turns = typeof result?.value === "number" ? result.value : 0;

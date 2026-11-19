@@ -7,7 +7,10 @@ import type {
   SavedBrowserFile,
 } from "./types.js";
 import { ASSISTANT_ROLE_SELECTOR } from "./constants.js";
-import { buildConversationTurnListExpression } from "./conversationTurns.js";
+import {
+  buildConversationTurnListExpression,
+  buildConversationTurnRoleFunction,
+} from "./conversationTurns.js";
 import {
   computeFileSha256,
   resolveSessionArtifactsDir,
@@ -331,16 +334,8 @@ function buildAssistantDownloadableFilesExpression(minTurnIndex?: number): strin
   return `(() => {
     const MIN_TURN_INDEX = ${minTurnLiteral};
     const ASSISTANT_SELECTOR = ${assistantLiteral};
-    const isAssistantTurn = (node) => {
-      if (!(node instanceof HTMLElement)) return false;
-      const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
-      if (turnAttr === 'assistant') return true;
-      const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
-      if (role === 'assistant') return true;
-      const testId = (node.getAttribute('data-testid') || '').toLowerCase();
-      if (testId.includes('assistant')) return true;
-      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
-    };
+    const turnRole = ${buildConversationTurnRoleFunction()};
+    const isAssistantTurn = (node) => node instanceof HTMLElement && turnRole(node) === 'assistant';
     const isChatGptDownloadUrl = (value) => {
       const raw = String(value || '').trim();
       if (!raw || raw.startsWith('sandbox:') || raw.startsWith('blob:')) return false;
@@ -745,16 +740,8 @@ function buildClickAssistantDownloadButtonsExpression(
     const MAX_CLICKS = ${maxClicksLiteral};
     const HAS_EXPECTED_LABELS = EXPECTED_LABELS.length > 0;
     const CLICKED_ATTRIBUTE = 'data-oracle-download-clicked';
-    const isAssistantTurn = (node) => {
-      if (!(node instanceof HTMLElement)) return false;
-      const turnAttr = (node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
-      if (turnAttr === 'assistant') return true;
-      const role = (node.getAttribute('data-message-author-role') || node.dataset?.messageAuthorRole || '').toLowerCase();
-      if (role === 'assistant') return true;
-      const testId = (node.getAttribute('data-testid') || '').toLowerCase();
-      if (testId.includes('assistant')) return true;
-      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
-    };
+    const turnRole = ${buildConversationTurnRoleFunction()};
+    const isAssistantTurn = (node) => node instanceof HTMLElement && turnRole(node) === 'assistant';
     const basename = (value) => {
       const raw = String(value || '').split(/[?#]/)[0].replace(/\\/+$/g, '');
       const part = raw.slice(raw.lastIndexOf('/') + 1);

@@ -1,7 +1,10 @@
 import path from "node:path";
 import type { ChromeClient, BrowserAttachment, BrowserLogger } from "../types.js";
 import { INPUT_SELECTORS, SEND_BUTTON_SELECTORS, UPLOAD_STATUS_SELECTORS } from "../constants.js";
-import { buildConversationTurnListExpression } from "../conversationTurns.js";
+import {
+  buildConversationTurnListExpression,
+  buildConversationTurnRoleFunction,
+} from "../conversationTurns.js";
 import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { transferAttachmentViaDataTransfer } from "./attachmentDataTransfer.js";
@@ -1825,11 +1828,10 @@ function buildUserTurnAttachmentExpression(options: {
       return { ok: false, conversationMismatch: true };
     }
     const turns = ${buildConversationTurnListExpression()};
-    const userTurns = turns.map((node, index) => ({ node, index })).filter(({ node }) => {
-      const attr = (node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
-      if (attr === 'user') return true;
-      return Boolean(node.querySelector('[data-message-author-role="user"]'));
-    });
+    const turnRole = ${buildConversationTurnRoleFunction()};
+    const userTurns = turns
+      .map((node, index) => ({ node, index }))
+      .filter(({ node }) => turnRole(node) === 'user');
     const eligibleTurns =
       MIN_TURN_INDEX === null ? userTurns : userTurns.filter(({ index }) => index >= MIN_TURN_INDEX);
     const lastUser = eligibleTurns[eligibleTurns.length - 1];

@@ -1,7 +1,9 @@
 import type { ChromeClient, BrowserLogger } from "../types.js";
 import {
+  ASSISTANT_ROLE_SELECTOR,
   DEEP_RESEARCH_PLUS_BUTTON,
   DEEP_RESEARCH_DROPDOWN_ITEM_TEXT,
+  DEEP_RESEARCH_FRAME_TITLE,
   DEEP_RESEARCH_PILL_LABEL,
   DEEP_RESEARCH_POLL_INTERVAL_MS,
   DEEP_RESEARCH_AUTO_CONFIRM_WAIT_MS,
@@ -9,7 +11,10 @@ import {
   FINISHED_ACTIONS_SELECTOR,
   STOP_BUTTON_SELECTOR,
 } from "../constants.js";
-import { buildConversationTurnListExpression } from "../conversationTurns.js";
+import {
+  buildConversationTurnListExpression,
+  buildConversationTurnRoleFunction,
+} from "../conversationTurns.js";
 import { delay } from "../utils.js";
 import { isDeepResearchIncompleteText } from "../deepResearchResult.js";
 import { buildClickDispatcher } from "./domEvents.js";
@@ -351,7 +356,7 @@ export async function waitForResearchPlanAutoConfirm(
           const rect = f.getBoundingClientRect();
           return rect.width > 200 && rect.height > 200;
         });
-        const assistantText = (document.querySelector('[data-message-author-role="assistant"]')?.textContent || '').toLowerCase();
+        const assistantText = (document.querySelector(${JSON.stringify(ASSISTANT_ROLE_SELECTOR)})?.textContent || '').toLowerCase();
         const hasResearchText = assistantText.includes('researching') ||
           assistantText.includes('research plan') ||
           assistantText.includes('survey') ||
@@ -849,10 +854,9 @@ async function readDeepResearchTargetResult(
     }
     await delay(100);
 
-    if (minTurnIndex >= 0) {
-      await rawClient.send("DOM.enable", {}, pageSessionId).catch(() => undefined);
-      await rawClient.send("Runtime.enable", {}, pageSessionId).catch(() => undefined);
-    }
+    // Owner lookups (title confirmation and turn scoping) resolve the iframe in this page.
+    await rawClient.send("DOM.enable", {}, pageSessionId).catch(() => undefined);
+    await rawClient.send("Runtime.enable", {}, pageSessionId).catch(() => undefined);
 
     // Baseline targets and owner turns before the submitted prompt are removed
     // first. Among remaining targets, a completed report is authoritative;
@@ -861,7 +865,12 @@ async function readDeepResearchTargetResult(
     let latestProgress: DeepResearchFrameStatus | null = null;
     const targetKeys: string[] = [];
     for (const [sessionId, target] of sessions) {
-      const sessionResult = await readDeepResearchTargetSession(rawClient, sessionId, target.url);
+      const sessionResult = await readDeepResearchTargetSession(
+        rawClient,
+        sessionId,
+        target.url,
+        pageSessionId,
+      );
       if (!sessionResult.confirmed) {
         continue;
       }
@@ -925,17 +934,17 @@ export async function captureDeepResearchTargetKeys(client: ChromeClient): Promi
   return scan.targetKeys;
 }
 
-async function readDeepResearchTargetOwnerTurnIndex(
-  rawClient: {
-    send: (
-      method: string,
-      params?: Record<string, unknown>,
-      sessionId?: string,
-    ) => Promise<unknown>;
-  },
+type RawCdpSender = {
+  send: (method: string, params?: Record<string, unknown>, sessionId?: string) => Promise<unknown>;
+};
+
+/** Runs `functionDeclaration` on the page's <iframe> element that owns `frameId`. */
+async function callOnFrameOwner(
+  rawClient: RawCdpSender,
   frameId: string,
-  pageSessionId?: string,
-): Promise<number | null> {
+  pageSessionId: string | undefined,
+  functionDeclaration: string,
+): Promise<unknown> {
   const owner = (await rawClient
     .send("DOM.getFrameOwner", { frameId }, pageSessionId)
     .catch(() => null)) as { backendNodeId?: number } | null;
@@ -953,22 +962,11 @@ async function readDeepResearchTargetOwnerTurnIndex(
     const response = (await rawClient
       .send(
         "Runtime.callFunctionOn",
-        {
-          objectId,
-          functionDeclaration: `function() {
-            const turns = ${buildConversationTurnListExpression()};
-            const index = turns.findIndex((turn) => turn === this || turn.contains?.(this));
-            return index >= 0 ? index : null;
-          }`,
-          returnByValue: true,
-        },
+        { objectId, functionDeclaration, returnByValue: true },
         pageSessionId,
       )
       .catch(() => null)) as { result?: { value?: unknown } } | null;
-    const value = response?.result?.value;
-    return typeof value === "number" && Number.isFinite(value) && value >= 0
-      ? Math.floor(value)
-      : null;
+    return response?.result?.value ?? null;
   } finally {
     await rawClient
       .send("Runtime.releaseObject", { objectId }, pageSessionId)
@@ -976,16 +974,56 @@ async function readDeepResearchTargetOwnerTurnIndex(
   }
 }
 
+async function readDeepResearchTargetOwnerTurnIndex(
+  rawClient: RawCdpSender,
+  frameId: string,
+  pageSessionId?: string,
+): Promise<number | null> {
+  const value = await callOnFrameOwner(
+    rawClient,
+    frameId,
+    pageSessionId,
+    `function() {
+      const turns = ${buildConversationTurnListExpression()};
+      const index = turns.findIndex((turn) => turn === this || turn.contains?.(this));
+      return index >= 0 ? index : null;
+    }`,
+  );
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : null;
+}
+
+/** A generic sandbox target is Deep Research only when its owner iframe says so. */
+async function isDeepResearchOwnerFrame(
+  rawClient: RawCdpSender,
+  frameId: string | undefined,
+  pageSessionId?: string,
+): Promise<boolean> {
+  if (!frameId) {
+    return false;
+  }
+  const title = await callOnFrameOwner(
+    rawClient,
+    frameId,
+    pageSessionId,
+    "function() { return this.getAttribute('title'); }",
+  );
+  return isDeepResearchFrameTitle(title);
+}
+
+function isDeepResearchFrameTitle(title: unknown): boolean {
+  return (
+    typeof title === "string" &&
+    title.trim().toLowerCase() === DEEP_RESEARCH_FRAME_TITLE.toLowerCase()
+  );
+}
+
 async function readDeepResearchTargetSession(
-  rawClient: {
-    send: (
-      method: string,
-      params?: Record<string, unknown>,
-      sessionId?: string,
-    ) => Promise<unknown>;
-  },
+  rawClient: RawCdpSender,
   sessionId: string,
   targetUrl: string,
+  pageSessionId?: string,
 ): Promise<DeepResearchTargetSessionResult> {
   await rawClient.send("Runtime.enable", {}, sessionId).catch(() => undefined);
   await rawClient.send("Page.enable", {}, sessionId).catch(() => undefined);
@@ -994,7 +1032,10 @@ async function readDeepResearchTargetSession(
     .send("Page.getFrameTree", {}, sessionId)
     .catch(() => null)) as { frameTree?: DeepResearchFrameTree } | null;
   const ownerFrameId = frameTree?.frameTree?.frame?.id;
-  if (!isConfirmedDeepResearchTarget(targetUrl, frameTree?.frameTree)) {
+  const confirmed =
+    isConfirmedDeepResearchTarget(targetUrl, frameTree?.frameTree) ||
+    (await isDeepResearchOwnerFrame(rawClient, ownerFrameId, pageSessionId));
+  if (!confirmed) {
     return { confirmed: false, read: null };
   }
   const frameIds = collectDeepResearchFrameIds(frameTree?.frameTree);
@@ -1244,7 +1285,8 @@ function buildDeepResearchStatusExpression(): string {
       const rect = f.getBoundingClientRect();
       return rect.width > 200 && rect.height > 200;
     });
-    const turns = document.querySelectorAll('[data-message-author-role="assistant"]');
+    const turnRole = ${buildConversationTurnRoleFunction()};
+    const turns = (${buildConversationTurnListExpression()}).filter((turn) => turnRole(turn) === 'assistant');
     const lastTurn = turns[turns.length - 1];
     const finished = Boolean(lastTurn?.querySelector?.(${finishedSelector}));
     const text = (lastTurn?.textContent || '').trim();
@@ -1272,15 +1314,13 @@ function buildDeepResearchCompletionPollExpression(minTurnIndex: number): string
     const accountBlocked = pageText.includes('suspicious activity detected') &&
       pageText.includes('secure your account') &&
       pageText.includes('regain access');
-    const isAssistantTurn = (node) => {
-      const attr = String(node.getAttribute('data-message-author-role') || node.getAttribute('data-turn') || node.dataset?.turn || '').toLowerCase();
-      return attr === 'assistant' ||
-        Boolean(node.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"]')) ||
-        String(node.getAttribute('data-testid') || '').toLowerCase().includes('conversation-turn') &&
-          /chatgpt\\s+said/i.test(node.innerText || node.textContent || '');
-    };
+    const turnRole = ${buildConversationTurnRoleFunction()};
+    const isAssistantTurn = (node) =>
+      turnRole(node) === 'assistant' ||
+      String(node.getAttribute('data-testid') || '').toLowerCase().includes('conversation-turn') &&
+        /chatgpt\\s+said/i.test(node.innerText || node.textContent || '');
     const conversationTurns = ${buildConversationTurnListExpression()};
-    const allAssistantTurns = Array.from(document.querySelectorAll('[data-message-author-role="assistant"], [data-turn="assistant"]'));
+    const allAssistantTurns = conversationTurns.filter(isAssistantTurn);
     const scopedTurns = scopedToNewTurns
       ? conversationTurns.slice(MIN_TURN_INDEX).filter(isAssistantTurn)
       : allAssistantTurns;
@@ -1317,7 +1357,8 @@ function buildDeepResearchCompletionPollExpression(minTurnIndex: number): string
       const rect = f.getBoundingClientRect();
       const descriptor = String(f.getAttribute('src') || '') + ' ' + String(f.getAttribute('name') || '');
       return rect.width > 200 && rect.height > 200 &&
-        /connector_openai_deep_research|deep-research/i.test(descriptor);
+        (/connector_openai_deep_research|deep-research/i.test(descriptor) ||
+          String(f.getAttribute('title') || '').trim().toLowerCase() === ${JSON.stringify(DEEP_RESEARCH_FRAME_TITLE.toLowerCase())});
     });
     const hasActiveScopedResearch = scopedToNewTurns && Boolean(lastTurn) &&
       hasScopedDeepResearchIframe &&

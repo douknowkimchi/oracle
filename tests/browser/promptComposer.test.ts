@@ -4,10 +4,6 @@ import {
   clearPromptComposer,
   submitPrompt,
 } from "../../src/browser/actions/promptComposer.js";
-import {
-  CONVERSATION_TURN_CONTAINER_SELECTOR,
-  CONVERSATION_TURN_SELECTOR,
-} from "../../src/browser/constants.js";
 
 describe("promptComposer", () => {
   test("fails composer clearing when stale text remains", async () => {
@@ -39,12 +35,11 @@ describe("promptComposer", () => {
               value: {
                 baseline: 10,
                 turnsCount: 10,
-                userMatched: false,
-                prefixMatched: false,
-                lastMatched: false,
-                hasNewTurn: false,
+                matchedUserIndex: -1,
+                newUserTurns: 0,
+                priorUserMatched: false,
+                assistantEchoMatched: true,
                 stopVisible: true,
-                assistantVisible: true,
                 composerCleared: true,
                 inConversation: false,
               },
@@ -64,71 +59,21 @@ describe("promptComposer", () => {
     }
   });
 
-  test("does not count nested broad-selector matches as new turns in a reused conversation", async () => {
-    vi.useFakeTimers();
-    try {
-      const topLevelTurns = [{ innerText: "old user" }, { innerText: "old assistant" }];
-      const nestedMatches = [
-        topLevelTurns[0],
-        { innerText: "old user" },
-        topLevelTurns[1],
-        { innerText: "old assistant" },
-      ];
-      const document = {
-        querySelector: () => null,
-        querySelectorAll: (selector: string) => {
-          if (selector === CONVERSATION_TURN_CONTAINER_SELECTOR) return topLevelTurns;
-          if (selector === CONVERSATION_TURN_SELECTOR) return nestedMatches;
-          return [];
-        },
-      };
-      class FakeTextArea {}
-      const runtime = {
-        evaluate: vi.fn(async ({ expression }: { expression: string }) => ({
-          result: {
-            value: Function(
-              "document",
-              "HTMLTextAreaElement",
-              "location",
-              `return ${expression};`,
-            )(document, FakeTextArea, { href: "https://chatgpt.com/c/reused" }),
-          },
-        })),
-      } as unknown as {
-        evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
-      };
-
-      const promise = promptComposer.verifyPromptCommitted(
-        runtime as never,
-        "new prompt",
-        150,
-        undefined,
-        2,
-      );
-      const assertion = expect(promise).rejects.toThrow(/prompt did not appear/i);
-      await vi.advanceTimersByTimeAsync(250);
-      await assertion;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   test("commit timeout throws a structured error with probe diagnostics", async () => {
     vi.useFakeTimers();
     try {
       const probe = {
         baseline: 10,
         turnsCount: 10,
-        userMatched: false,
-        prefixMatched: false,
-        lastMatched: false,
-        hasNewTurn: false,
+        matchedUserIndex: -1,
+        newUserTurns: 0,
+        priorUserMatched: true,
+        assistantEchoMatched: false,
         stopVisible: false,
-        assistantVisible: false,
         composerCleared: true,
         inConversation: false,
         editorValue: "",
-        lastTurn: "previous turn text",
+        lastUser: "previous turn text",
       };
       const runtime = {
         evaluate: vi
@@ -160,40 +105,37 @@ describe("promptComposer", () => {
         stage: "submit-prompt",
         code: "prompt-commit-timeout",
         commitProbe: expect.objectContaining({
-          hasNewTurn: false,
+          newUserTurns: 0,
+          priorUserMatched: true,
           composerCleared: true,
           turnsCount: 10,
-          lastTurnLength: "previous turn text".length,
+          lastUserLength: "previous turn text".length,
         }),
       });
       // Free text must not leak into the structured details.
       const commitProbe = error.details?.commitProbe as Record<string, unknown>;
-      expect(commitProbe).not.toHaveProperty("lastTurn");
+      expect(commitProbe).not.toHaveProperty("lastUser");
       expect(commitProbe).not.toHaveProperty("editorValue");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test("allows prompt match even if baseline turn count cannot be read", async () => {
+  test("fails closed when the baseline turn count cannot be read", async () => {
     const runtime = {
       evaluate: vi
         .fn()
-        // Baseline read fails
+        // Baseline read fails, so a matching message cannot be shown to be new.
         .mockRejectedValueOnce(new Error("turn read failed"))
-        // First poll shows prompt match (baseline unknown)
-        .mockResolvedValueOnce({
+        .mockResolvedValue({
           result: {
             value: {
               baseline: -1,
               turnsCount: 1,
-              userMatched: true,
-              prefixMatched: false,
-              lastMatched: true,
-              hasNewTurn: false,
-              stopVisible: false,
-              assistantVisible: false,
-              composerCleared: false,
+              matchedUserIndex: -1,
+              newUserTurns: 0,
+              priorUserMatched: false,
+              composerCleared: true,
               inConversation: true,
             },
           },
@@ -204,7 +146,9 @@ describe("promptComposer", () => {
 
     await expect(
       promptComposer.verifyPromptCommitted(runtime as never, "hello", 150),
-    ).resolves.toBe(1);
+    ).rejects.toMatchObject({
+      details: { code: "prompt-commit-timeout", commitProbe: { baseline: -1 } },
+    });
   });
 
   test("attachment sends time out instead of allowing Enter fallback", async () => {
@@ -264,12 +208,9 @@ describe("promptComposer", () => {
             value: {
               baseline: 0,
               turnsCount: 1,
-              userMatched: true,
-              prefixMatched: false,
-              lastMatched: true,
-              hasNewTurn: true,
+              matchedUserIndex: 0,
+              newUserTurns: 1,
               stopVisible: true,
-              assistantVisible: false,
               composerCleared: true,
               inConversation: true,
             },
