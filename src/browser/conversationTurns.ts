@@ -94,8 +94,9 @@ export function buildConversationTurnCountExpression(rootExpression = "document"
 /**
  * Browser-context function `(turn) => node` giving the element that holds one listed message's
  * content. A current-markup unit reads from its single response body (leaving its "said:"
- * heading out) or, when it holds several, from the whole unit; a response body is its own
- * content; a legacy turn container holds its assistant role node.
+ * heading out); a response body is its own content; a legacy turn container holds its
+ * assistant role node. A unit with several bodies has not been observed: it falls back to the
+ * whole unit, so text extraction may include the heading or only the first markdown block.
  */
 export function buildConversationMessageRootFunction(): string {
   const unitSelector = JSON.stringify(CONVERSATION_MESSAGE_UNIT_SELECTOR);

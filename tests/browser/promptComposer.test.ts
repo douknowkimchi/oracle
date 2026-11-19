@@ -151,7 +151,11 @@ describe("promptComposer", () => {
     await expect(
       promptComposer.verifyPromptCommitted(runtime as never, "hello", 60_000),
     ).rejects.toMatchObject({
-      details: { code: "prompt-commit-timeout", commitProbe: { baseline: -1 } },
+      details: {
+        code: "prompt-commit-baseline-unknown",
+        timeoutMs: 0,
+        commitProbe: { baseline: -1 },
+      },
     });
     // One final probe only: no post-send baseline read and no 60s wait.
     expect(runtime.evaluate).toHaveBeenCalledTimes(1);

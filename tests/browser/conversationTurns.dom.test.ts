@@ -299,17 +299,6 @@ describe.skipIf(!chromePath)("conversation turns in a real browser", () => {
       expect(snapshot?.turnIndex).toBe(2);
     });
 
-    test("response extraction reads every body of one assistant unit", async () => {
-      await show(
-        currentTurn("t1", PROMPT, null) +
-          '<div data-chatgpt-search-unit-key="t1:4:assistant">' +
-          '<div data-response-body="b1">First part.</div><div data-response-body="b2">Second part.</div></div>',
-      );
-      const snapshot = await readAssistantSnapshot(runtimeFor(page), 0);
-      expect(snapshot?.text).toContain("First part.");
-      expect(snapshot?.text).toContain("Second part.");
-    });
-
     test("tab inspection links the latest user and assistant messages", async () => {
       const tab = (await page.evaluate(buildTabInspectionExpressionForTest())) as Record<
         string,

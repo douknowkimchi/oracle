@@ -967,6 +967,18 @@ async function verifyPromptCommitted(
     );
     await logDomFailure(Runtime, logger, "prompt-commit");
   }
+  if (baseline === null) {
+    throw new BrowserAutomationError(
+      "Prompt send could not be confirmed: the pre-send turn count was unavailable",
+      {
+        stage: "submit-prompt",
+        code: "prompt-commit-baseline-unknown",
+        promptLength: prompt.trim().length,
+        timeoutMs: 0,
+        commitProbe: probe ? summarizeCommitProbe(probe) : undefined,
+      },
+    );
+  }
   // "Too large" lets the caller resend the prompt as files. Only allow that when the pre-send
   // baseline is known and no new user message appeared, so a sent prompt is never sent again.
   const nothingArrived =
