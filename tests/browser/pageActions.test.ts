@@ -1710,7 +1710,7 @@ describe("waitForAssistantResponse", () => {
     expect(capturedExpression).toContain("lastAssistantTurn.querySelectorAll('.markdown')");
     expect(capturedExpression).not.toContain("document.querySelectorAll('.markdown')");
     expect(capturedExpression).toContain("data-message-author-role");
-    expect(capturedExpression).toContain("role === 'assistant'");
+    expect(capturedExpression).toContain("turnRole(node) === 'assistant'");
   });
 
   test("falls back to snapshot when observer fails", async () => {

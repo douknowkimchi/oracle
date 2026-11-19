@@ -1,15 +1,18 @@
 import type { ChromeClient, BrowserLogger } from "./types.js";
-import { CONVERSATION_TURN_SELECTOR } from "./constants.js";
+import {
+  buildConversationTurnListExpression,
+  buildConversationTurnRoleFunction,
+} from "./conversationTurns.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveSessionArtifactsDir } from "./artifacts.js";
 
 export function buildConversationDebugExpression(): string {
   return `(() => {
-    const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
-    const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR));
+    const turnRole = ${buildConversationTurnRoleFunction()};
+    const turns = ${buildConversationTurnListExpression()};
     return turns.map((node) => ({
-      role: node.getAttribute('data-message-author-role'),
+      role: turnRole(node),
       text: node.innerText?.slice(0, 200),
       testid: node.getAttribute('data-testid'),
     }));
@@ -67,9 +70,9 @@ export async function captureBrowserDiagnostics(
   const baseName = `${context}-${timestamp}`;
   const domPath = path.join(dir, `${baseName}.dom.json`);
   const expression = `(() => {
-    const CONVERSATION_SELECTOR = ${JSON.stringify(CONVERSATION_TURN_SELECTOR)};
-    const turns = Array.from(document.querySelectorAll(CONVERSATION_SELECTOR)).slice(-6).map((node) => ({
-      role: node.getAttribute('data-message-author-role') || node.getAttribute('data-turn'),
+    const turnRole = ${buildConversationTurnRoleFunction()};
+    const turns = (${buildConversationTurnListExpression()}).slice(-6).map((node) => ({
+      role: turnRole(node),
       text: (node.innerText || node.textContent || '').slice(0, 2000),
       testid: node.getAttribute('data-testid'),
     }));

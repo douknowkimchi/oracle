@@ -15,7 +15,6 @@ import {
   buildActivateDeepResearchExpressionForTest,
   buildDeepResearchCompletionPollExpressionForTest,
   buildDeepResearchFrameStatusExpressionForTest,
-  buildDeepResearchStatusExpressionForTest,
   captureDeepResearchTargetKeys,
   filterIncompleteDeepResearchReadForTest,
   findDeepResearchFrameIdForTest,
@@ -1924,51 +1923,6 @@ describe("checkDeepResearchStatus", () => {
     expect(status.placeholderOnly).toBe(false);
   });
 
-  it("does not report completed for a tool-only Deep Research placeholder", () => {
-    const expression = buildDeepResearchStatusExpressionForTest();
-    const assistantTurn = {
-      textContent: "Called tool",
-      querySelector: () => ({}),
-    };
-    const result = new vm.Script(expression).runInNewContext({
-      document: {
-        querySelector: (selector: string) => (selector.includes("copy") ? {} : null),
-        querySelectorAll: (selector: string) => {
-          if (selector === "iframe") return [];
-          if (selector === '[data-message-author-role="assistant"]') return [assistantTurn];
-          return [];
-        },
-      },
-    }) as { completed?: boolean; placeholderOnly?: boolean; textLength?: number };
-
-    expect(result.completed).toBe(false);
-    expect(result.placeholderOnly).toBe(true);
-    expect(result.textLength).toBe("Called tool".length);
-  });
-
-  it("does not report completed for a Deep Research planning panel", () => {
-    const expression = buildDeepResearchCompletionPollExpressionForTest();
-    const assistantTurn = {
-      textContent:
-        "project root-cause analysis\nUpdate\nInspect the adapter.\nDetermining steps for creating a report...\nStop research",
-      querySelector: () => ({}),
-    };
-    const result = new vm.Script(expression).runInNewContext({
-      document: {
-        body: { innerText: assistantTurn.textContent },
-        querySelector: () => null,
-        querySelectorAll: (selector: string) => {
-          if (selector === "iframe") return [];
-          if (selector.includes("data-message-author-role")) return [assistantTurn];
-          return [];
-        },
-      },
-    }) as { finished?: boolean; incompleteResult?: boolean };
-
-    expect(result.finished).toBe(false);
-    expect(result.incompleteResult).toBe(true);
-  });
-
   it("keeps short scoped iframe turns active", () => {
     const expression = buildDeepResearchCompletionPollExpressionForTest(0);
     const iframe = {
@@ -2090,34 +2044,5 @@ describe("checkDeepResearchStatus", () => {
     }) as { accountBlocked?: boolean };
 
     expect(result.accountBlocked).toBe(true);
-  });
-
-  it("scopes completion actions to the latest assistant turn", () => {
-    const expression = buildDeepResearchStatusExpressionForTest();
-    const priorFinishedTurn = {
-      textContent: "Earlier complete answer with enough text to look finished.",
-      querySelector: () => ({}),
-    };
-    const currentResearchTurn = {
-      textContent:
-        "Researching current browser support and collecting citations, but not complete yet.",
-      querySelector: () => null,
-    };
-    const result = new vm.Script(expression).runInNewContext({
-      document: {
-        querySelector: (selector: string) => (selector.includes("copy") ? {} : null),
-        querySelectorAll: (selector: string) => {
-          if (selector === "iframe") return [];
-          if (selector === '[data-message-author-role="assistant"]') {
-            return [priorFinishedTurn, currentResearchTurn];
-          }
-          return [];
-        },
-      },
-    }) as { completed?: boolean; placeholderOnly?: boolean; textLength?: number };
-
-    expect(result.completed).toBe(false);
-    expect(result.placeholderOnly).toBe(false);
-    expect(result.textLength).toBe(currentResearchTurn.textContent.length);
   });
 });

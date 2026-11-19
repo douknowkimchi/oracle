@@ -32,6 +32,7 @@ export const ANSWER_SELECTORS = [
   '[data-turn="assistant"] .markdown',
   '[data-message-author-role="assistant"]',
   '[data-turn="assistant"]',
+  '[data-chatgpt-search-unit-key$=":assistant"] [data-response-body]',
 ];
 
 export const CONVERSATION_TURN_SELECTOR =
@@ -39,8 +40,23 @@ export const CONVERSATION_TURN_SELECTOR =
   "article[data-message-author-role], div[data-message-author-role], section[data-message-author-role], " +
   "article[data-turn], div[data-turn], section[data-turn]";
 export const CONVERSATION_TURN_CONTAINER_SELECTOR = '[data-testid^="conversation-turn"]';
-export const ASSISTANT_ROLE_SELECTOR =
+// Current ChatGPT transcript (observed 2026-11-20 on a live Deep Research conversation): no
+// data-testid/data-message-author-role/data-turn at all. One turn wrapper holds the user message
+// and every response, each message is a unit keyed `<turn>:<n>:<role>`, and app output such as
+// the Deep Research report is a response body without a unit key.
+export const CONVERSATION_MESSAGE_UNIT_SELECTOR = "[data-chatgpt-search-unit-key]";
+export const CONVERSATION_RESPONSE_BODY_SELECTOR = "[data-response-body]";
+export const LEGACY_ASSISTANT_ROLE_SELECTOR =
   '[data-message-author-role="assistant"], [data-turn="assistant"]';
+export const ASSISTANT_ROLE_SELECTOR =
+  `${LEGACY_ASSISTANT_ROLE_SELECTOR}, [data-chatgpt-search-unit-key$=":assistant"], ` +
+  '[data-response-body]:not([data-chatgpt-search-unit-key$=":user"] *)';
+export const USER_ROLE_SELECTOR =
+  '[data-message-author-role="user"], [data-turn="user"], [data-chatgpt-search-unit-key$=":user"]';
+// Any node that carries a message role in either markup; roles are read by the shared
+// conversationTurns role function, never by matching these attributes again elsewhere.
+export const CONVERSATION_ROLE_MARKER_SELECTOR =
+  "[data-message-author-role], [data-turn], [data-chatgpt-search-unit-key], [data-response-body]";
 export const CLOUDFLARE_SCRIPT_SELECTOR = 'script[src*="/challenge-platform/"]';
 export const CLOUDFLARE_TITLE = "just a moment";
 export const PROMPT_PRIMARY_SELECTOR = "#prompt-textarea";
@@ -98,6 +114,9 @@ export const COPY_BUTTON_SELECTOR = 'button[data-testid="copy-turn-action-button
 export const DEEP_RESEARCH_PLUS_BUTTON = '[data-testid="composer-plus-btn"]';
 export const DEEP_RESEARCH_DROPDOWN_ITEM_TEXT = "Deep research";
 export const DEEP_RESEARCH_PILL_LABEL = "Deep research";
+// The current report iframe is served from a generic `connector-id-*` sandbox origin; its owner
+// <iframe> element in the conversation is titled exactly this (observed 2026-11-20).
+export const DEEP_RESEARCH_FRAME_TITLE = "Deep research";
 export const DEEP_RESEARCH_POLL_INTERVAL_MS = 5_000;
 export const DEEP_RESEARCH_AUTO_CONFIRM_WAIT_MS = 70_000;
 export const DEEP_RESEARCH_DEFAULT_TIMEOUT_MS = 2_400_000;

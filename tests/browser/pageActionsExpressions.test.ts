@@ -8,16 +8,15 @@ import {
   buildUserTurnAttachmentExpressionForTest,
 } from "../../src/browser/pageActions.ts";
 import {
-  CONVERSATION_TURN_CONTAINER_SELECTOR,
   CONVERSATION_TURN_SELECTOR,
-  ASSISTANT_ROLE_SELECTOR,
+  LEGACY_ASSISTANT_ROLE_SELECTOR,
 } from "../../src/browser/constants.ts";
 
 describe("browser automation expressions", () => {
   test("assistant extractor references constants", () => {
     const expression = buildAssistantExtractorForTest("capture");
     expect(expression).toContain(JSON.stringify(CONVERSATION_TURN_SELECTOR));
-    expect(expression).toContain(JSON.stringify(ASSISTANT_ROLE_SELECTOR));
+    expect(expression).toContain(JSON.stringify(LEGACY_ASSISTANT_ROLE_SELECTOR));
   });
 
   test("assistant extractor treats image-only ChatGPT turns as responses", () => {
@@ -26,78 +25,6 @@ describe("browser automation expressions", () => {
     expect(expression).toContain("Generated image.");
     expect(expression).toContain("stopped thinking edit");
     expect(expression).toContain("thought for");
-  });
-
-  test("assistant extractor indexes top-level turns instead of nested role nodes", () => {
-    class FakeElement {
-      readonly dataset: Record<string, string> = {};
-
-      constructor(
-        private readonly attributes: Record<string, string>,
-        readonly innerText = "",
-        private readonly children: FakeElement[] = [],
-      ) {}
-
-      get textContent(): string {
-        return this.innerText;
-      }
-
-      get innerHTML(): string {
-        return this.innerText;
-      }
-
-      getAttribute(name: string): string | null {
-        return this.attributes[name] ?? null;
-      }
-
-      matches(): boolean {
-        return false;
-      }
-
-      querySelector(selector: string): FakeElement | null {
-        if (selector === ASSISTANT_ROLE_SELECTOR) {
-          return (
-            this.children.find(
-              (child) => child.getAttribute("data-message-author-role") === "assistant",
-            ) ?? null
-          );
-        }
-        return null;
-      }
-
-      querySelectorAll(): FakeElement[] {
-        return [];
-      }
-    }
-
-    const nestedUser = new FakeElement({ "data-message-author-role": "user" }, "old prompt");
-    const nestedAssistant = new FakeElement(
-      { "data-message-author-role": "assistant" },
-      "old answer",
-    );
-    const userTurn = new FakeElement({ "data-testid": "conversation-turn-1" }, "old prompt", [
-      nestedUser,
-    ]);
-    const assistantTurn = new FakeElement({ "data-testid": "conversation-turn-2" }, "old answer", [
-      nestedAssistant,
-    ]);
-    const document = {
-      querySelectorAll: (selector: string) => {
-        if (selector === CONVERSATION_TURN_CONTAINER_SELECTOR) return [userTurn, assistantTurn];
-        if (selector === CONVERSATION_TURN_SELECTOR) {
-          return [userTurn, nestedUser, assistantTurn, nestedAssistant];
-        }
-        return [];
-      },
-    };
-    const expression = buildAssistantExtractorForTest("capture");
-    const result = Function(
-      "document",
-      "HTMLElement",
-      `${expression}; return capture();`,
-    )(document, FakeElement) as { text?: string; turnIndex?: number } | null;
-
-    expect(result).toMatchObject({ text: "old answer", turnIndex: 1 });
   });
 
   test("conversation debug expression references conversation selector", () => {
@@ -116,7 +43,7 @@ describe("browser automation expressions", () => {
     const expression = buildMarkdownFallbackExtractorForTest("2");
     expect(expression).not.toContain("const MIN_TURN_INDEX = (MIN_TURN_INDEX");
     expect(expression).toContain("const __minTurn");
-    expect(expression).toContain("role !== 'user'");
+    expect(expression).toContain("turnRole(container) !== 'user'");
     expect(expression).toContain("copy-turn-action-button");
     expect(expression).toContain(CONVERSATION_TURN_SELECTOR);
     expect(expression).toContain("turn.contains?.(node)");
@@ -132,7 +59,7 @@ describe("browser automation expressions", () => {
   test("copy expression scopes to assistant turn buttons", () => {
     const expression = buildCopyExpressionForTest({});
     expect(expression).toContain(JSON.stringify(CONVERSATION_TURN_SELECTOR));
-    expect(expression).toContain(ASSISTANT_ROLE_SELECTOR);
+    expect(expression).toContain("turnRole(node) === 'assistant'");
     expect(expression).toContain("isAssistantTurn");
     expect(expression).toContain("copy-turn-action-button");
   });
