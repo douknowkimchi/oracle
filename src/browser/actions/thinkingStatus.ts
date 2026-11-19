@@ -1,10 +1,6 @@
 import type { BrowserLogger, ChromeClient } from "../types.js";
 import { formatElapsed } from "../../oracle/format.js";
-import {
-  ASSISTANT_ROLE_SELECTOR,
-  CONVERSATION_TURN_SELECTOR,
-  STOP_BUTTON_SELECTORS,
-} from "../constants.js";
+import { STOP_BUTTON_SELECTORS } from "../constants.js";
 import {
   buildConversationTurnListExpression,
   buildConversationTurnRoleFunction,
@@ -192,8 +188,6 @@ export function sanitizeThinkingText(raw: string): string {
 }
 
 function buildThinkingStatusExpression(): string {
-  const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
-  const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   const selectors = [
     "span.loading-shimmer",
     "span.flex.items-center.gap-1.truncate.text-start.align-middle.text-token-text-tertiary",
@@ -208,8 +202,6 @@ function buildThinkingStatusExpression(): string {
   const keywordsLiteral = JSON.stringify(keywords);
   const stopSelectorLiteral = JSON.stringify(stopSelector);
   return `(async () => {
-    const CONVERSATION_SELECTOR = ${conversationLiteral};
-    const ASSISTANT_SELECTOR = ${assistantLiteral};
     const selectors = ${selectorLiteral};
     const keywords = ${keywordsLiteral};
     const stopSelector = ${stopSelectorLiteral};
@@ -477,16 +469,12 @@ const ACTIVE_THINKING_LABELS = [
 function buildThinkingActivityPredicateJs(fnName: string, detailed: boolean): string {
   const stopLiteral = JSON.stringify(STOP_BUTTON_SELECTORS.join(", "));
   const activeLabelsLiteral = JSON.stringify(ACTIVE_THINKING_LABELS);
-  const conversationLiteral = JSON.stringify(CONVERSATION_TURN_SELECTOR);
-  const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   const strong = detailed ? "{ active: true, strong: true }" : "true";
   const weak = detailed ? "{ active: true, strong: false }" : "true";
   const idle = detailed ? "{ active: false, strong: false }" : "false";
   return `const ${fnName} = () => {
     const STOP_SELECTOR = ${stopLiteral};
     const ACTIVE_LABELS = ${activeLabelsLiteral};
-    const CONVERSATION_SELECTOR = ${conversationLiteral};
-    const ASSISTANT_SELECTOR = ${assistantLiteral};
     const isVisible = (node) => {
       if (!(node instanceof HTMLElement)) return false;
       const rect = node.getBoundingClientRect();

@@ -27,8 +27,6 @@ describe("promptComposer", () => {
       const runtime = {
         evaluate: vi
           .fn()
-          // Baseline read (turn count)
-          .mockResolvedValueOnce({ result: { value: 10 } })
           // Polls (repeat)
           .mockResolvedValue({
             result: {
@@ -49,7 +47,13 @@ describe("promptComposer", () => {
         evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
       };
 
-      const promise = promptComposer.verifyPromptCommitted(runtime as never, "hello", 150);
+      const promise = promptComposer.verifyPromptCommitted(
+        runtime as never,
+        "hello",
+        150,
+        undefined,
+        10,
+      );
       // Attach the rejection handler before timers advance to avoid unhandled-rejection warnings.
       const assertion = expect(promise).rejects.toThrow(/prompt did not appear/i);
       await vi.advanceTimersByTimeAsync(250);
@@ -78,15 +82,19 @@ describe("promptComposer", () => {
       const runtime = {
         evaluate: vi
           .fn()
-          // Baseline read (turn count)
-          .mockResolvedValueOnce({ result: { value: 10 } })
           // Polls + final diagnostic probe
           .mockResolvedValue({ result: { value: probe } }),
       } as unknown as {
         evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
       };
 
-      const promise = promptComposer.verifyPromptCommitted(runtime as never, "hello", 150);
+      const promise = promptComposer.verifyPromptCommitted(
+        runtime as never,
+        "hello",
+        150,
+        undefined,
+        10,
+      );
       const assertion = promise.then(
         () => {
           throw new Error("expected verifyPromptCommitted to reject");
@@ -121,34 +129,32 @@ describe("promptComposer", () => {
     }
   });
 
-  test("fails closed when the baseline turn count cannot be read", async () => {
+  test("an unknown pre-send baseline fails at once without re-reading turns", async () => {
     const runtime = {
-      evaluate: vi
-        .fn()
-        // Baseline read fails, so a matching message cannot be shown to be new.
-        .mockRejectedValueOnce(new Error("turn read failed"))
-        .mockResolvedValue({
-          result: {
-            value: {
-              baseline: -1,
-              turnsCount: 1,
-              matchedUserIndex: -1,
-              newUserTurns: 0,
-              priorUserMatched: false,
-              composerCleared: true,
-              inConversation: true,
-            },
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            baseline: -1,
+            turnsCount: 1,
+            matchedUserIndex: -1,
+            newUserTurns: 0,
+            priorUserMatched: false,
+            composerCleared: true,
+            inConversation: true,
           },
-        }),
+        },
+      }),
     } as unknown as {
-      evaluate: (args: { expression: string; returnByValue?: boolean }) => Promise<unknown>;
+      evaluate: ReturnType<typeof vi.fn>;
     };
 
     await expect(
-      promptComposer.verifyPromptCommitted(runtime as never, "hello", 150),
+      promptComposer.verifyPromptCommitted(runtime as never, "hello", 60_000),
     ).rejects.toMatchObject({
       details: { code: "prompt-commit-timeout", commitProbe: { baseline: -1 } },
     });
+    // One final probe only: no post-send baseline read and no 60s wait.
+    expect(runtime.evaluate).toHaveBeenCalledTimes(1);
   });
 
   test("attachment sends time out instead of allowing Enter fallback", async () => {

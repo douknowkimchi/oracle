@@ -46,8 +46,11 @@ export const CONVERSATION_TURN_CONTAINER_SELECTOR = '[data-testid^="conversation
 // the Deep Research report is a response body without a unit key.
 export const CONVERSATION_MESSAGE_UNIT_SELECTOR = "[data-chatgpt-search-unit-key]";
 export const CONVERSATION_RESPONSE_BODY_SELECTOR = "[data-response-body]";
+export const LEGACY_ASSISTANT_ROLE_SELECTOR =
+  '[data-message-author-role="assistant"], [data-turn="assistant"]';
 export const ASSISTANT_ROLE_SELECTOR =
-  '[data-message-author-role="assistant"], [data-turn="assistant"], [data-chatgpt-search-unit-key$=":assistant"], [data-response-body]';
+  `${LEGACY_ASSISTANT_ROLE_SELECTOR}, [data-chatgpt-search-unit-key$=":assistant"], ` +
+  '[data-response-body]:not([data-chatgpt-search-unit-key$=":user"] *)';
 export const USER_ROLE_SELECTOR =
   '[data-message-author-role="user"], [data-turn="user"], [data-chatgpt-search-unit-key$=":user"]';
 // Any node that carries a message role in either markup; roles are read by the shared

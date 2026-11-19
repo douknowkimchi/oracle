@@ -10,6 +10,7 @@ import {
   USER_ROLE_SELECTOR,
 } from "../constants.js";
 import {
+  buildConversationMessageRootFunction,
   buildConversationTurnListExpression,
   buildConversationTurnRoleFunction,
 } from "../conversationTurns.js";
@@ -1142,10 +1143,8 @@ function buildResponseObserverExpression(
 }
 
 function buildAssistantExtractor(functionName: string): string {
-  const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   return `const ${functionName} = () => {
     ${buildClickDispatcher()}
-    const ASSISTANT_SELECTOR = ${assistantLiteral};
     const turnRole = ${buildConversationTurnRoleFunction()};
     const isAssistantTurn = (node) => node instanceof HTMLElement && turnRole(node) === 'assistant';
 
@@ -1172,7 +1171,7 @@ function buildAssistantExtractor(functionName: string): string {
       if (!isAssistantTurn(turn)) {
         continue;
       }
-      const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) ?? turn;
+      const messageRoot = ${buildConversationMessageRootFunction()}(turn);
       expandCollapsibles(messageRoot);
       const preferred =
         (messageRoot.matches?.('.markdown') || messageRoot.matches?.('[data-message-content]') ? messageRoot : null) ||

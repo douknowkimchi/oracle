@@ -7,7 +7,6 @@ import {
   STOP_BUTTON_SELECTOR,
 } from "../constants.js";
 import {
-  buildConversationTurnCountExpression,
   buildConversationTurnListExpression,
   buildConversationTurnRoleFunction,
 } from "../conversationTurns.js";
@@ -858,30 +857,18 @@ async function verifyPromptCommitted(
   logger?: BrowserLogger,
   baselineTurns?: number,
 ): Promise<number | null> {
-  const deadline = Date.now() + timeoutMs;
   const encodedPrompt = JSON.stringify(prompt.trim());
   const primarySelectorLiteral = JSON.stringify(PROMPT_PRIMARY_SELECTOR);
   const fallbackSelectorLiteral = JSON.stringify(PROMPT_FALLBACK_SELECTOR);
   const inputSelectorsLiteral = JSON.stringify(INPUT_SELECTORS);
   const stopSelectorLiteral = JSON.stringify(STOP_BUTTON_SELECTOR);
-  let baseline: number | null =
+  // The baseline must be read before the send. Reading it now could already count the new
+  // message, so an unknown baseline skips the wait and fails with the probe below.
+  const baseline: number | null =
     typeof baselineTurns === "number" && Number.isFinite(baselineTurns) && baselineTurns >= 0
       ? Math.floor(baselineTurns)
       : null;
-  if (baseline === null) {
-    try {
-      const { result } = await Runtime.evaluate({
-        expression: buildConversationTurnCountExpression(),
-        returnByValue: true,
-      });
-      const raw = typeof result?.value === "number" ? result.value : Number(result?.value);
-      if (Number.isFinite(raw)) {
-        baseline = Math.max(0, Math.floor(raw));
-      }
-    } catch {
-      // ignore; baseline stays unknown
-    }
-  }
+  const deadline = baseline === null ? Date.now() : Date.now() + timeoutMs;
   const baselineLiteral = baseline ?? -1;
   // Learned: ChatGPT can echo/format text; normalize markdown and use prefix matches to detect the sent prompt.
   const script = `(() => {
@@ -970,13 +957,21 @@ async function verifyPromptCommitted(
     .then((res) => res?.result?.value as CommitProbeState | undefined)
     .catch(() => undefined);
   const probe = finalProbe && typeof finalProbe === "object" ? finalProbe : lastProbe;
+  const finalIndex = finalProbe?.matchedUserIndex;
+  if (typeof finalIndex === "number" && Number.isInteger(finalIndex) && finalIndex >= 0) {
+    return finalIndex + 1;
+  }
   if (logger) {
     logger(
       `Prompt commit check failed; latest state: ${probe ? JSON.stringify(probe) : "unavailable"}`,
     );
     await logDomFailure(Runtime, logger, "prompt-commit");
   }
-  if (prompt.trim().length >= 50_000) {
+  // "Too large" lets the caller resend the prompt as files. Only allow that when the pre-send
+  // baseline is known and no new user message appeared, so a sent prompt is never sent again.
+  const nothingArrived =
+    typeof probe?.baseline === "number" && probe.baseline >= 0 && probe.newUserTurns === 0;
+  if (prompt.trim().length >= 50_000 && nothingArrived) {
     throw new BrowserAutomationError(
       "Prompt did not appear in conversation before timeout (likely too large).",
       {

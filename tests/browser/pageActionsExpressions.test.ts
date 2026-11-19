@@ -9,14 +9,14 @@ import {
 } from "../../src/browser/pageActions.ts";
 import {
   CONVERSATION_TURN_SELECTOR,
-  ASSISTANT_ROLE_SELECTOR,
+  LEGACY_ASSISTANT_ROLE_SELECTOR,
 } from "../../src/browser/constants.ts";
 
 describe("browser automation expressions", () => {
   test("assistant extractor references constants", () => {
     const expression = buildAssistantExtractorForTest("capture");
     expect(expression).toContain(JSON.stringify(CONVERSATION_TURN_SELECTOR));
-    expect(expression).toContain(JSON.stringify(ASSISTANT_ROLE_SELECTOR));
+    expect(expression).toContain(JSON.stringify(LEGACY_ASSISTANT_ROLE_SELECTOR));
   });
 
   test("assistant extractor treats image-only ChatGPT turns as responses", () => {

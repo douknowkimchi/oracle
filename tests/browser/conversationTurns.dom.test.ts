@@ -15,10 +15,11 @@ import {
 import { buildTabInspectionExpressionForTest } from "../../src/browser/liveTabs.js";
 import { __test__ as reattach } from "../../src/browser/reattach.js";
 import type { ChromeClient } from "../../src/browser/types.js";
+import { ASSISTANT_ROLE_SELECTOR } from "../../src/browser/constants.js";
 
 // These expressions run inside ChatGPT, so they are checked against real DOM in a real browser.
 // Set ORACLE_DOM_TEST_CHROME to a Chrome / chrome-headless-shell binary when none is installed
-// at a standard location.
+// at a standard location. CI must provide one: the suite fails there instead of skipping.
 const chromePath = [
   process.env.ORACLE_DOM_TEST_CHROME,
   process.env.CHROME_PATH,
@@ -26,8 +27,13 @@ const chromePath = [
   "/usr/bin/google-chrome-stable",
   "/usr/bin/chromium",
   "/usr/bin/chromium-browser",
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "C:/Program Files/Google/Chrome/Application/chrome.exe",
 ].find((candidate): candidate is string => Boolean(candidate && existsSync(candidate)));
+
+test.runIf(process.env.CI === "true")("CI provides a browser for the DOM suite", () => {
+  expect(chromePath, "set ORACLE_DOM_TEST_CHROME").toBeTruthy();
+});
 
 const PROMPT =
   "Hospital name: Songpa Clinic. Official address: 236 Dongnam-ro. How do patients find it?";
@@ -167,10 +173,28 @@ describe.skipIf(!chromePath)("conversation turns in a real browser", () => {
       );
       expect(await turns()).toEqual(["user:wrapped prompt", "assistant:wrapped answer"]);
     });
+
+    test("a response body inside the user unit keeps the user role", async () => {
+      await show(
+        '<div data-chatgpt-search-unit-key="t:0:user"><div data-response-body="u">my question</div></div>' +
+          '<div data-chatgpt-search-unit-key="t:1:assistant"><div data-response-body="a">the answer</div></div>',
+      );
+      expect(await turns()).toEqual(["user:my question", "assistant:the answer"]);
+      const firstAssistant = await page.evaluate(
+        (selector) => document.querySelector(selector)?.textContent,
+        ASSISTANT_ROLE_SELECTOR,
+      );
+      expect(firstAssistant).toBe("the answer");
+    });
+
+    test("a unit key without a role suffix has no role", async () => {
+      await show('<div data-chatgpt-search-unit-key="opaque">text</div>');
+      expect(await turns()).toEqual([":text"]);
+    });
   });
 
   describe("submit confirmation", () => {
-    const verify = (baseline?: number, timeoutMs = 1_500) =>
+    const verify = (baseline = 0, timeoutMs = 1_500) =>
       promptComposer.verifyPromptCommitted(
         runtimeFor(page),
         PROMPT,
@@ -216,13 +240,32 @@ describe.skipIf(!chromePath)("conversation turns in a real browser", () => {
 
     test("a new user message with other text does not confirm this prompt", async () => {
       await appendLater(currentTurn("t1", "an unrelated question entirely", null));
-      const error = await verify(undefined, 800).catch((caught: unknown) => caught);
+      const error = await verify(0, 800).catch((caught: unknown) => caught);
       expect(error).toMatchObject({
         details: {
           code: "prompt-commit-timeout",
           commitProbe: { newUserTurns: 1, matchedUserIndex: -1 },
         },
       });
+    });
+
+    test("an oversized prompt that reached the conversation is never offered for resend", async () => {
+      const longPrompt = `${PROMPT} ${"x".repeat(50_000)}`;
+      await appendLater(currentTurn("t1", "partial render of the long prompt", null));
+      const error = await promptComposer
+        .verifyPromptCommitted(runtimeFor(page), longPrompt, 800, undefined, 0)
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({
+        details: { code: "prompt-commit-timeout", commitProbe: { newUserTurns: 1 } },
+      });
+    });
+
+    test("an oversized prompt with no new user message is reported too large", async () => {
+      const longPrompt = `${PROMPT} ${"x".repeat(50_000)}`;
+      const error = await promptComposer
+        .verifyPromptCommitted(runtimeFor(page), longPrompt, 300, undefined, 0)
+        .catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ details: { code: "prompt-too-large" } });
     });
   });
 
@@ -254,6 +297,17 @@ describe.skipIf(!chromePath)("conversation turns in a real browser", () => {
       const snapshot = await readAssistantSnapshot(runtimeFor(page), 0);
       expect(snapshot?.text).toBe("Final summary of the completed research report.");
       expect(snapshot?.turnIndex).toBe(2);
+    });
+
+    test("response extraction reads every body of one assistant unit", async () => {
+      await show(
+        currentTurn("t1", PROMPT, null) +
+          '<div data-chatgpt-search-unit-key="t1:4:assistant">' +
+          '<div data-response-body="b1">First part.</div><div data-response-body="b2">Second part.</div></div>',
+      );
+      const snapshot = await readAssistantSnapshot(runtimeFor(page), 0);
+      expect(snapshot?.text).toContain("First part.");
+      expect(snapshot?.text).toContain("Second part.");
     });
 
     test("tab inspection links the latest user and assistant messages", async () => {

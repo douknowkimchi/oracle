@@ -4,6 +4,7 @@ import {
   CONVERSATION_ROLE_MARKER_SELECTOR,
   CONVERSATION_TURN_CONTAINER_SELECTOR,
   CONVERSATION_TURN_SELECTOR,
+  LEGACY_ASSISTANT_ROLE_SELECTOR,
 } from "./constants.js";
 
 /**
@@ -18,9 +19,13 @@ export function buildConversationTurnRoleFunction(): string {
       if (!element || typeof element.getAttribute !== 'function') return '';
       const marked = element.getAttribute('data-message-author-role') || element.getAttribute('data-turn');
       if (marked) return marked.toLowerCase();
+      const unitRole = (key) => (/:([a-z]+)$/i.exec(key || '')?.[1] || '').toLowerCase();
       const unitKey = element.getAttribute('data-chatgpt-search-unit-key');
-      if (unitKey) return unitKey.slice(unitKey.lastIndexOf(':') + 1).toLowerCase();
-      return element.getAttribute('data-response-body') !== null ? 'assistant' : '';
+      if (unitKey !== null) return unitRole(unitKey);
+      if (element.getAttribute('data-response-body') === null) return '';
+      // A response body takes its unit's role; one outside any unit is an app response.
+      const unit = element.closest?.('[data-chatgpt-search-unit-key]');
+      return unit ? unitRole(unit.getAttribute('data-chatgpt-search-unit-key')) : 'assistant';
     };
     const direct = own(node);
     if (direct || typeof node?.querySelector !== 'function') return direct;
@@ -84,4 +89,24 @@ export function buildConversationTurnListExpression(rootExpression = "document")
 
 export function buildConversationTurnCountExpression(rootExpression = "document"): string {
   return `(${buildConversationTurnListExpression(rootExpression)}).length`;
+}
+
+/**
+ * Browser-context function `(turn) => node` giving the element that holds one listed message's
+ * content. A current-markup unit reads from its single response body (leaving its "said:"
+ * heading out) or, when it holds several, from the whole unit; a response body is its own
+ * content; a legacy turn container holds its assistant role node.
+ */
+export function buildConversationMessageRootFunction(): string {
+  const unitSelector = JSON.stringify(CONVERSATION_MESSAGE_UNIT_SELECTOR);
+  const bodySelector = JSON.stringify(CONVERSATION_RESPONSE_BODY_SELECTOR);
+  const legacySelector = JSON.stringify(LEGACY_ASSISTANT_ROLE_SELECTOR);
+  return `((turn) => {
+    if (turn.matches?.(${bodySelector})) return turn;
+    if (turn.matches?.(${unitSelector})) {
+      const bodies = turn.querySelectorAll(${bodySelector});
+      return bodies.length === 1 ? bodies[0] : turn;
+    }
+    return turn.querySelector?.(${legacySelector}) || turn;
+  })`;
 }

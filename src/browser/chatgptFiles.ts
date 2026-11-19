@@ -6,8 +6,8 @@ import type {
   ChromeClient,
   SavedBrowserFile,
 } from "./types.js";
-import { ASSISTANT_ROLE_SELECTOR } from "./constants.js";
 import {
+  buildConversationMessageRootFunction,
   buildConversationTurnListExpression,
   buildConversationTurnRoleFunction,
 } from "./conversationTurns.js";
@@ -330,10 +330,8 @@ function buildAssistantDownloadableFilesExpression(minTurnIndex?: number): strin
     typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
       ? Math.floor(minTurnIndex)
       : -1;
-  const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   return `(() => {
     const MIN_TURN_INDEX = ${minTurnLiteral};
-    const ASSISTANT_SELECTOR = ${assistantLiteral};
     const turnRole = ${buildConversationTurnRoleFunction()};
     const isAssistantTurn = (node) => node instanceof HTMLElement && turnRole(node) === 'assistant';
     const isChatGptDownloadUrl = (value) => {
@@ -439,7 +437,7 @@ function buildAssistantDownloadableFilesExpression(minTurnIndex?: number): strin
       const turn = turns[index];
       if (!isAssistantTurn(turn)) continue;
       if (MIN_TURN_INDEX >= 0 && index < MIN_TURN_INDEX) continue;
-      const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) || turn;
+      const messageRoot = ${buildConversationMessageRootFunction()}(turn);
       files.push(...serializeFiles(messageRoot));
     }
     return files;
@@ -719,7 +717,6 @@ function buildClickAssistantDownloadButtonsExpression(
     typeof minTurnIndex === "number" && Number.isFinite(minTurnIndex) && minTurnIndex >= 0
       ? Math.floor(minTurnIndex)
       : -1;
-  const assistantLiteral = JSON.stringify(ASSISTANT_ROLE_SELECTOR);
   const expectedLabelsLiteral = JSON.stringify(expectedLabels);
   const allowGenericDownloadLabelsLiteral = JSON.stringify(allowGenericDownloadLabels);
   const markClickedLiteral = JSON.stringify(options.markClicked === true);
@@ -732,7 +729,6 @@ function buildClickAssistantDownloadButtonsExpression(
       : 0;
   return `(() => {
     const MIN_TURN_INDEX = ${minTurnLiteral};
-    const ASSISTANT_SELECTOR = ${assistantLiteral};
     const EXPECTED_LABELS = ${expectedLabelsLiteral};
     const ALLOW_GENERIC_DOWNLOAD_LABELS = ${allowGenericDownloadLabelsLiteral};
     const MARK_CLICKED = ${markClickedLiteral};
@@ -856,7 +852,7 @@ function buildClickAssistantDownloadButtonsExpression(
       const turn = turns[index];
       if (!isAssistantTurn(turn)) continue;
       if (MIN_TURN_INDEX >= 0 && index < MIN_TURN_INDEX) continue;
-      const messageRoot = turn.querySelector(ASSISTANT_SELECTOR) || turn;
+      const messageRoot = ${buildConversationMessageRootFunction()}(turn);
       const controls = Array.from(messageRoot.querySelectorAll([
         'button',
         'a[href]',
